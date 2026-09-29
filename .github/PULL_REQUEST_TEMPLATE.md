@@ -149,8 +149,7 @@ Paste logs here
 **Deployment Plan:**
 - [ ] Merge to `main`
 - [ ] Tag new release
-- [ ] Update SourceForge
-- [ ] Discord announcement
+
 
 ---
 

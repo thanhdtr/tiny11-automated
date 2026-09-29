@@ -3,7 +3,7 @@
 [![Build Tiny11](https://github.com/kelexine/tiny11-automated/actions/workflows/build-tiny11.yml/badge.svg)](https://github.com/kelexine/tiny11-automated/actions/workflows/build-tiny11.yml)
 [![Build Tiny11 Core](https://github.com/kelexine/tiny11-automated/actions/workflows/build-tiny11-core.yml/badge.svg)](https://github.com/kelexine/tiny11-automated/actions/workflows/build-tiny11-core.yml)
 [![Build Nano11](https://github.com/kelexine/tiny11-automated/actions/workflows/build-nano11.yml/badge.svg)](https://github.com/kelexine/tiny11-automated/actions/workflows/build-nano11.yml)
-[![SourceForge Downloads](https://img.shields.io/sourceforge/dt/tiny-11-releases.svg)](https://sourceforge.net/projects/tiny-11-releases/files/latest/download)
+
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-red?logo=GitHub-Sponsors)](https://github.com/sponsors/kelexine)
@@ -64,12 +64,11 @@ This project is based on the original [tiny11 builder by ntdevlabs](https://gith
 
 ### 📥 Downloads
 
-<a href="https://sourceforge.net/p/tiny-11-releases/"><img alt="Download Tiny 11 Releases" src="https://sourceforge.net/sflogo.php?type=18&amp;group_id=3937094" width=200></a>
-- **Pre-built ISOs**: [SourceForge](https://sourceforge.net/projects/tiny-11-releases/files/) (Primary source)
-- **Release Notes**: [GitHub Releases](https://github.com/kelexine/tiny11-automated/releases)
-- **Source Code**: [GitHub Repository](https://github.com/kelexine/tiny11-automated)
+This fork does not publish anywhere else. Builds stay in **your own repository**:
 
-> ⚠️ **ISO files are hosted on SourceForge only.** GitHub Releases contains release notes and checksums.
+- **ISO files**: workflow **Artifacts** (kept for 7 days) and **GitHub Releases**
+- **Checksums**: `.sha256` / `.md5` / `.txt` files attached to each run
+- **Source Code**: your GitHub repository
 
 ### 🌐 Landing Pages
 
@@ -80,6 +79,24 @@ This project is based on the original [tiny11 builder by ntdevlabs](https://gith
 ### ⚖️ Legal Notice
 
 > **IMPORTANT**: These scripts are for educational and testing purposes only. You **must** have a valid Windows license. Using modified Windows images may violate Microsoft's terms of service. See [LICENSE](LICENSE) and [SECURITY.md](SECURITY.md) for details.
+
+---
+
+## 🔒 Privacy & Data Handling
+
+This fork sends **nothing** to third parties:
+
+- ❌ No Discord / Slack / email notifications
+- ❌ No SourceForge uploads, download stats or API calls
+- ❌ No release-detection services, scrapers or telemetry
+- ❌ No analytics, tracking or any form of data collection
+
+The only network traffic the build performs:
+
+1. Downloading the Windows 11 ISO from the URL **you** provide (Microsoft)
+2. Downloading this repository's scripts (GitHub)
+3. Downloading `oscdimg.exe` from Microsoft - only if the Windows ADK is not installed
+4. Storing results in **your own** repository (Actions artifacts / Releases)
 
 ---
 
@@ -99,7 +116,7 @@ Perfect for beginners and automated deployments:
    - Windows ISO URL
    - Edition (Home/Pro/Education)
    - Optional parameters
-5. **Download** ISO from Artifacts or [SourceForge](https://sourceforge.net/projects/tiny-11-releases/)
+5. **Download** the ISO from the workflow **Artifacts** (or GitHub Releases)
 
 **Build time**: 30-80 minutes depending on variant
 
@@ -534,9 +551,7 @@ preserve_winre:         # 🆕 Preserve winre.wim (real hardware / 24H2+ builds)
 
 ✨ **Automated download** - Fetches ISO automatically  
 🔐 **Checksum verification** - Validates ISO integrity  
-📢 **Discord notifications** - Real-time build status  
 📦 **Artifact upload** - ISO + checksums available  
-🚀 **SourceForge deployment** - Automatic release distribution  
 📊 **Build statistics** - Performance metrics tracked
 
 ---
@@ -616,14 +631,12 @@ preserve_winre:         # 🆕 Preserve winre.wim (real hardware / 24H2+ builds)
 1. Check workflow logs for specific error
 2. Enable `skip_cleanup: true` to preserve artifacts
 3. Verify ISO URL is accessible and correct
-4. Check if SourceForge credentials are configured (for upload)
-5. Ensure GitHub Actions has sufficient runner space
+4. Ensure GitHub Actions has sufficient runner space
 
 **Common causes:**
 - Invalid ISO URL (404 error)
 - Network timeout during download
 - Insufficient runner disk space
-- SourceForge API rate limiting
 
 </details>
 
@@ -702,8 +715,8 @@ Get-FileHash -Path "tiny11.iso" -Algorithm SHA256
 ### 🔒 Security Best Practices
 
 ✅ **Download from official sources only**
-  - SourceForge: https://sourceforge.net/projects/tiny-11-releases/
-  - GitHub: https://github.com/kelexine/tiny11-automated
+  - Microsoft: https://www.microsoft.com/software-download/windows11
+  - Your own fork (workflow artifacts / releases)
 
 ✅ **Verify checksums before installation**
   ```powershell
@@ -745,7 +758,6 @@ Found a security issue? **DO NOT create a public GitHub issue!**
 - **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)** - Community guidelines
 - **[SECURITY.md](SECURITY.md)** - Security policy & reporting
 - **[LICENSE](LICENSE)** - MIT License terms
-- **[SOURCEFORGE_README.md](SOURCEFORGE_README.md)** - SourceForge-specific info
 
 ### 🎓 Tutorials & Guides
 
@@ -789,23 +801,15 @@ We welcome contributions from the community! Tiny11 Automated serves **2,000+ us
 6. Push to your fork (`git push origin feature/amazing-feature`)
 7. Open a Pull Request
 
-### 🧪 Scraper Unit Testing
+### 🧪 Testing
 
-For Python automation components (such as `scripts/microsoft_direct_downloader.py`), a robust unit and integration test suite is located in the `tests/` directory.
+Build-number parsing tests are in `tests/Test-BuildNumberParsing.Tests.ps1` (Pester):
 
-To run the test suite in an isolated environment:
-```bash
-# 1. Set up a local virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 2. Install dependencies & test requirements
-pip install -r requirements.txt pytest pytest-asyncio
-
-# 3. Execute the test suite
-pytest tests/test_microsoft_downloader.py
+```powershell
+Invoke-Pester .\tests\Test-BuildNumberParsing.Tests.ps1
 ```
-This test suite uses complete mock coverage of Playwright page locators and user-agent rotations to validate scraper behavior without performing live requests.
+
+No network access is required to run the test suite.
 
 ### Contributor Recognition
 
@@ -813,7 +817,6 @@ All contributors are recognized in:
 - Release notes
 - CONTRIBUTORS.md file
 - Project README
-- Special Discord role (if applicable)
 
 **By contributing, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md) and [MIT License](LICENSE).**
 
@@ -823,11 +826,8 @@ All contributors are recognized in:
 
 ### Connect With Us
 
-- **💬 Discord**: [Join our server](https://discord.gg/xy6uRHvrrN) - Real-time chat & support
 - **🗨️ GitHub Discussions**: [Ask questions](https://github.com/kelexine/tiny11-automated/discussions) - Q&A and ideas
 - **🐛 Issue Tracker**: [Report bugs](https://github.com/kelexine/tiny11-automated/issues) - Bug reports only
-- **📥 SourceForge**: [Download releases](https://sourceforge.net/projects/tiny-11-releases/) - Official ISOs
-- **🔔 Release Notifications**: Watch repository → Custom → Releases
 
 ### Community Stats
 
@@ -841,9 +841,8 @@ All contributors are recognized in:
 
 1. **Read the docs** - Check README and wiki first
 2. **Search issues** - Someone may have asked before
-3. **Ask in Discord** - Fastest real-time help
-4. **Create discussion** - For general questions
-5. **File issue** - For confirmed bugs only
+3. **Create discussion** - For general questions
+4. **File issue** - For confirmed bugs only
 
 ---
 
@@ -907,8 +906,7 @@ The authors (kelexine, ntdevlabs) are **NOT responsible** for:
 
 ### Official Resources
 
-- **📦 GitHub Repository**: https://github.com/kelexine/tiny11-automated
-- **📥 SourceForge Downloads**: https://sourceforge.net/projects/tiny-11-releases/files/
+- **📦 GitHub Repository**: https://github.com/thanhdtr/tiny11-automated
 - **🐛 Issue Tracker**: https://github.com/kelexine/tiny11-automated/issues
 - **📋 Releases**: https://github.com/kelexine/tiny11-automated/releases (notes only)
 - **💬 Discussions**: https://github.com/kelexine/tiny11-automated/discussions

@@ -65,8 +65,6 @@ All community members are expected to:
 This Code of Conduct applies within all project spaces, including but not limited to:
 
 - GitHub repository (issues, PRs, discussions, code)
-- Discord server (all channels, DMs with maintainers)
-- SourceForge project page (comments, reviews)
 - Social media mentions and discussions
 - Email communications with maintainers
 - Any other official Tiny11 Automated spaces
@@ -86,7 +84,7 @@ This Code of Conduct also applies when an individual is officially representing 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainer:
 
 - **Email**: frankiekelechi@gmail.com
-- **Discord DM**: kelexine
+
 - **GitHub**: Private message to @kelexine
 
 All complaints will be reviewed and investigated promptly and fairly.
@@ -290,7 +288,7 @@ We celebrate positive community members who:
 
 **Community Champions** may receive:
 - Recognition in release notes
-- Special Discord role
+
 - Mention in README
 - Eternal gratitude 🙏
 
@@ -301,7 +299,7 @@ We celebrate positive community members who:
 This Code of Conduct may be updated periodically. Changes will be:
 
 - Committed to the repository with clear changelog
-- Announced in Discord #general
+
 - Highlighted in README
 - Effective immediately upon commit
 
@@ -326,7 +324,7 @@ If you have questions about this Code of Conduct:
 
 - **Email**: frankiekelechi@gmail.com
 - **GitHub Discussion**: Start a thread in Q&A category
-- **Discord**: Ask in #general
+
 
 ---
 

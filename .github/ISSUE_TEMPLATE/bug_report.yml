@@ -32,7 +32,7 @@ body:
       options:
         - label: I searched existing issues and found no duplicates
           required: true
-        - label: I'm using the latest release from GitHub or SourceForge
+        - label: I'm using the latest release from GitHub
           required: true
         - label: I've read the README and documentation
           required: true
