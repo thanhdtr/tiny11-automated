@@ -15,7 +15,8 @@
       * ask how to handle Windows Defender (Keep / Disable / Remove)
       * show a full app picker that preinstalls software at first logon (winutil)
       * run the selected headless builder (Standard / Core / Nano)
-      * move the finished ISO to %LOCALAPPDATA%\tiny11-automated\output
+      * ask where to save the finished ISO: the source .iso's folder (default)
+      or a custom folder you choose (created if it does not exist)
 
     Requirements: Windows 10/11, 25GB+ free disk space, internet access
     (repository + optional oscdimg.exe download), a Windows 11 ISO and a
@@ -450,6 +451,30 @@ if (-not ((Test-Path "${isoDrive}:\sources\install.wim") -or (Test-Path "${isoDr
     throw "Drive ${isoDrive}: does not contain Windows installation media (sources\install.wim / install.esd)."
 }
 
+#---------[ Output location ]---------#
+$chosenOutputDir = if ($isoFile) { Split-Path -Parent $isoFile } else { $outputDir }
+if (-not $NonInteractive) {
+    Write-Host ''
+    Write-Host 'Where should the finished ISO be saved?' -ForegroundColor Cyan
+    if ($isoFile) {
+        Write-Host "  [1] Same folder as your source ISO: $chosenOutputDir  [default]"
+    }
+    else {
+        Write-Host "  [1] Default folder: $chosenOutputDir  [default]"
+    }
+    Write-Host '  [2] Custom location'
+    $raw = Read-Default 'Choice' '1'
+    if ($raw -eq '2') {
+        $custom = (Read-Host 'Output folder').Trim().Trim('"')
+        if ($custom) {
+            if (-not [System.IO.Path]::IsPathRooted($custom)) { $custom = Join-Path -Path (Get-Location).Path -ChildPath $custom }
+            $chosenOutputDir = [System.IO.Path]::GetFullPath($custom)
+            New-Item -ItemType Directory -Force -Path $chosenOutputDir | Out-Null
+            Write-Host "Saving the finished ISO to $chosenOutputDir" -ForegroundColor Cyan
+        }
+    }
+}
+
 #---------[ Disk space check ]---------#
 $targetDrive = if ($Scratch) { $Scratch } else { $repoDir.Substring(0, 1) }
 $freeGB = [math]::Round(([System.IO.DriveInfo]::new($targetDrive)).AvailableFreeSpace / 1GB, 1)
@@ -476,7 +501,7 @@ if ($Variant -ne 'Standard') { Write-Host "  WinRE   : $winreLabel" }
 if ($BackupDrivers) { Write-Host '  Drivers : exported from this PC + injected' }
 Write-Host "  Defender : $Defender"
 Write-Host "  Apps     : $(if ($Apps) { $Apps } else { 'none' })"
-Write-Host "  Output  : $outputDir"
+Write-Host "  Output  : $chosenOutputDir"
 Write-Host ''
 if (-not $NonInteractive) {
     $raw = Read-Default 'Start the build (30-80 minutes)?' 'Y'
@@ -543,6 +568,13 @@ $producedIso = switch ($Variant) {
     default { 'tiny11.iso' }
 }
 $producedPath = Join-Path $scriptsDir $producedIso
+# Builders write next to the source .iso when -ISO was a file path
+$sourceDir = $null
+if ($isoFile) {
+    $sourceDir = Split-Path -Parent $isoFile
+    $sourceProduced = Join-Path $sourceDir $producedIso
+    if (Test-Path -LiteralPath $sourceProduced) { $producedPath = $sourceProduced }
+}
 
 if ($exitCode -ne 0 -or -not (Test-Path $producedPath)) {
     $log = Get-ChildItem -Path (Join-Path $scriptsDir '*.log') -ErrorAction SilentlyContinue |
@@ -556,7 +588,8 @@ if ($exitCode -ne 0 -or -not (Test-Path $producedPath)) {
 $suffix = switch ($Variant) { 'Core' { 'core' } 'Nano' { 'nano' } default { 'standard' } }
 $stamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
 $finalName = "tiny11-$suffix-$stamp.iso"
-$finalPath = Join-Path $outputDir $finalName
+$finalDir = $chosenOutputDir
+$finalPath = Join-Path $finalDir $finalName
 Move-Item -LiteralPath $producedPath -Destination $finalPath -Force
 
 Get-ChildItem -Path (Join-Path $scriptsDir '*') -Include '*.log', '*buildinfo*.json' -ErrorAction SilentlyContinue |

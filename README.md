@@ -165,6 +165,12 @@ Set-ExecutionPolicy Bypass -Scope Process
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Apps '7zip,chrome,vlc'
 ```
 
+**Output location**: `run.ps1` asks where to save the finished ISO: the **same folder as your
+source `.iso`** (the default) or a **custom location** you pick (created if it does not exist).
+Direct builder runs default to the source file's folder when `-ISO` is a file path (or the script
+folder for a mounted drive letter) and accept `-OutputDir <folder>` to override; `run.ps1` names
+its ISO `tiny11-<variant>-<timestamp>.iso`.
+
 **System Requirements**: Windows 10/11, PowerShell 5.1+, 30GB+ free space, Admin rights
 
 ---
@@ -297,6 +303,7 @@ tiny11-automated/
     [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
     [-Defender <string>]       # Optional: Keep (Standard default), Disable or Remove (Core/Nano default)
     [-Apps <string>]           # Optional: winutil app keys for first-logon install (e.g. "7zip,chrome") or "winutil"
+    [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
     [-SkipCleanup]             # Optional: Keep temp files for debugging
 ```
 
@@ -318,6 +325,7 @@ tiny11-automated/
     [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
     [-Defender <string>]       # Optional: Keep, Disable or Remove (default: Remove)
     [-Apps <string>]           # Optional: winutil app keys for first-logon install (e.g. "7zip,chrome") or "winutil"
+    [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
     [-SkipCleanup]             # Optional: Keep temp files
     [-PreserveWinRE]           # Keep winre.wim intact (required for real hardware / 24H2+ to avoid 0x8007000B)
 ```
@@ -342,6 +350,9 @@ tiny11-automated/
 
 # Build straight from a downloaded .iso file (mounted automatically)
 .\scripts\tiny11maker-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 6
+
+# Save the finished ISO to a custom folder (default: next to the source .iso)
+.\scripts\tiny11maker-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 6 -OutputDir D:\Tiny11Out
 
 # Back up this PC's drivers into host_drivers\ and add them to the image -
 # they auto-install on the freshly installed Windows (no driver downloads)
@@ -387,7 +398,9 @@ reinstalling the *Windows Defender Platform* optional feature or resetting Windo
    the Public Desktop (recovery path if the auto-install ever fails)
 2. Your key list is stored as `install-apps.json`
 3. A `RunOnce` entry silently installs the selected apps **at first logon** (UAC is
-   disabled in this image, so there is no prompt) and logs to `C:\ProgramData\tiny11\apps.log`
+   disabled in this image, so there is no prompt) and logs to `C:\ProgramData\tiny11\apps.log`.
+   The install **only runs when an internet connection is detected**: offline logons skip it
+   silently (the `winutil.cmd` launcher stays available for later)
 4. Keys are validated against winutil's live `applications.json` catalog at build time;
    interactive `run.ps1` builds show a full scrollable picker
    (Space = toggle, Enter = confirm, Esc = skip)

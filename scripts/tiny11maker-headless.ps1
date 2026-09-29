@@ -32,6 +32,10 @@
     (e.g. '7zip,chrome,vlc'), or the literal value 'winutil' to only bundle
     the winutil tool (Desktop shortcut) without auto-installing anything.
 
+.PARAMETER OutputDir
+    Custom folder for the finished ISO. Defaults to the folder of the source
+    .iso file (file-path -ISO), or the script folder (drive-letter -ISO).
+
 .PARAMETER SkipCleanup
     Skip cleanup of temporary files after ISO creation (optional, for debugging)
 
@@ -77,7 +81,10 @@ param (
     [string]$Defender = 'Keep',
 
     [Parameter(Mandatory=$false, HelpMessage="Comma-separated winutil app keys to install on first logon (e.g. '7zip,chrome,vlc'), or 'winutil' to only bundle the tool")]
-    [string]$Apps = ''
+    [string]$Apps = '',
+
+    [Parameter(Mandatory=$false, HelpMessage="Custom folder for the finished ISO (default: next to the source .iso file, or the script folder for a drive letter)")]
+    [string]$OutputDir = ''
 )
 
 #---------[ Error Handling ]---------#
@@ -103,6 +110,12 @@ $wimFilePath = "$ScratchDisk\tiny11\sources\install.wim"
 $scratchDir = "$ScratchDisk\scratchdir"
 $tiny11Dir = "$ScratchDisk\tiny11"
 $outputISO = "$PSScriptRoot\tiny11.iso"
+if ($OutputDir) {
+    $od = $OutputDir.Trim().Trim('"')
+    if (-not [System.IO.Path]::IsPathRooted($od)) { $od = Join-Path -Path (Get-Location).Path -ChildPath $od }
+    $outputISO = Join-Path ([System.IO.Path]::GetFullPath($od)) (Split-Path -Leaf $outputISO)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $outputISO) | Out-Null
+}
 $logFile = "$PSScriptRoot\tiny11_$(Get-Date -Format yyyyMMdd_HHmmss).log"
 # Third-party app sources (-Apps) - only contacted when -Apps is used
 $appsCatalogUrl = 'https://raw.githubusercontent.com/Christitustech/winutil/main/config/applications.json'
@@ -134,6 +147,14 @@ function Initialize-IsoSource {
     $isoPath = [System.IO.Path]::GetFullPath($isoPath)
     if (-not (Test-Path -LiteralPath $isoPath -PathType Leaf)) {
         throw "ISO file not found: $isoPath"
+    }
+
+    # Deliver the finished ISO next to the source file (same folder as the original .iso)
+    if ($OutputDir) {
+        Write-Log "Output ISO will be written to the custom -OutputDir folder: $($script:outputISO)"
+    } else {
+        $script:outputISO = Join-Path (Split-Path -Parent $isoPath) (Split-Path -Leaf $script:outputISO)
+        Write-Log "Output ISO will be written next to the source: $($script:outputISO)"
     }
 
     $image = Get-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue
@@ -298,9 +319,22 @@ $logPath = 'C:\ProgramData\tiny11\apps.log'
 function Write-AppLog([string]$Message) {
     try { Add-Content -Path $logPath -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message" } catch { }
 }
+function Test-InternetConnection {
+    foreach ($probe in @('http://www.msftconnecttest.com/connecttest.txt', 'http://connectivitycheck.gstatic.com/generate_204')) {
+        try {
+            $r = Invoke-WebRequest -Uri $probe -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
+            if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) { return $true }
+        } catch { }
+    }
+    return $false
+}
 try {
     New-Item -ItemType Directory -Force -Path 'C:\ProgramData\tiny11' | Out-Null
     Write-AppLog 'Third-party app install starting'
+    if (-not (Test-InternetConnection)) {
+        Write-AppLog 'No internet connection at logon - skipping third-party app install'
+        return
+    }
     $dir = Join-Path $env:SystemRoot 'Tiny11'
     $scriptPath = Join-Path $dir 'winutil.ps1'
     $configPath = Join-Path $dir 'install-apps.json'
@@ -1282,15 +1316,37 @@ function Create-TinyISO {
         $OSCDIMG = $localOSCDIMGPath
     }
     
+    # Move any existing output ISO aside so a failed rebuild cannot lose it
+    $backISO = $null
+    if (Test-Path -LiteralPath $outputISO) {
+        $backISO = "$outputISO.bak"
+        Remove-Item -LiteralPath $backISO -Force -ErrorAction SilentlyContinue
+        Move-Item -LiteralPath $outputISO -Destination $backISO -Force
+        Write-Log "Existing output ISO moved aside: $backISO"
+    }
     Write-Log "Building bootable ISO (this may take 5-10 minutes)..."
-    & $OSCDIMG '-m' '-o' '-u2' '-udfver102' `
-        "-bootdata:2#p0,e,b$tiny11Dir\boot\etfsboot.com#pEF,e,b$tiny11Dir\efi\microsoft\boot\efisys.bin" `
-        $tiny11Dir $outputISO | Out-Null
-    
+    try {
+        & $OSCDIMG '-m' '-o' '-u2' '-udfver102' `
+            "-bootdata:2#p0,e,b$tiny11Dir\boot\etfsboot.com#pEF,e,b$tiny11Dir\efi\microsoft\boot\efisys.bin" `
+            $tiny11Dir $outputISO | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "oscdimg failed with exit code $LASTEXITCODE" }
+    } catch {
+        if ($backISO -and (Test-Path -LiteralPath $backISO)) {
+            Move-Item -LiteralPath $backISO -Destination $outputISO -Force
+            Write-Log "Restored the previous ISO after failure: $outputISO" -Level WARN
+        }
+        throw
+    }
+
     if (Test-Path $outputISO) {
         $isoSize = [math]::Round((Get-Item $outputISO).Length / 1GB, 2)
         Write-Log "ISO created successfully: $outputISO (${isoSize}GB)"
+        if ($backISO) { Remove-Item -LiteralPath $backISO -Force -ErrorAction SilentlyContinue }
     } else {
+        if ($backISO -and (Test-Path -LiteralPath $backISO)) {
+            Move-Item -LiteralPath $backISO -Destination $outputISO -Force
+            Write-Log "Restored the previous ISO after failure: $outputISO" -Level WARN
+        }
         throw "ISO creation failed"
     }
 }
