@@ -40,6 +40,10 @@
 .PARAMETER EnableDotnet35
     Enable .NET Framework 3.5 support (Core only).
 
+.PARAMETER BackupDrivers
+    Export third-party drivers from this PC into host_drivers\ and add them to
+    the new image (install.wim + boot.wim). Prompted (default Yes) when omitted.
+
 .PARAMETER SkipCleanup
     Keep temporary build files for debugging.
 
@@ -72,6 +76,8 @@ param(
 
     [switch]$EnableDotnet35,
 
+    [switch]$BackupDrivers,
+
     [switch]$SkipCleanup,
 
     [switch]$NonInteractive
@@ -95,6 +101,7 @@ if (-not $Index -and $env:TINY11_INDEX) { try { $Index = [int]$env:TINY11_INDEX 
 if (-not $Scratch -and $env:TINY11_SCRATCH) { $Scratch = $env:TINY11_SCRATCH }
 if ($env:TINY11_PRESERVEWINRE -eq '1') { $PreserveWinRE = $true }
 if ($env:TINY11_DOTNET35 -eq '1') { $EnableDotnet35 = $true }
+if ($env:TINY11_BACKUPDRIVERS -eq '1') { $BackupDrivers = $true }
 if ($env:TINY11_SKIPCLEANUP -eq '1') { $SkipCleanup = $true }
 if ($env:TINY11_NONINTERACTIVE -eq '1') { $NonInteractive = $true }
 
@@ -124,6 +131,7 @@ if (-not $isAdmin) {
         Set-ChildEnv 'TINY11_SCRATCH' $Scratch
         if ($PreserveWinRE) { Set-ChildEnv 'TINY11_PRESERVEWINRE' '1' }
         if ($EnableDotnet35) { Set-ChildEnv 'TINY11_DOTNET35' '1' }
+        if ($BackupDrivers) { Set-ChildEnv 'TINY11_BACKUPDRIVERS' '1' }
         if ($SkipCleanup) { Set-ChildEnv 'TINY11_SKIPCLEANUP' '1' }
         if ($NonInteractive) { Set-ChildEnv 'TINY11_NONINTERACTIVE' '1' }
 
@@ -134,7 +142,7 @@ if (-not $isAdmin) {
         Write-Host 'Elevation was cancelled.' -ForegroundColor Red
         Write-Host "Re-run this in a PowerShell window opened as Administrator, or save run.ps1 and execute it there." -ForegroundColor Yellow
     } finally {
-        foreach ($name in @('TINY11_VARIANT', 'TINY11_ISO', 'TINY11_INDEX', 'TINY11_SCRATCH', 'TINY11_PRESERVEWINRE', 'TINY11_DOTNET35', 'TINY11_SKIPCLEANUP', 'TINY11_NONINTERACTIVE')) {
+        foreach ($name in @('TINY11_VARIANT', 'TINY11_ISO', 'TINY11_INDEX', 'TINY11_SCRATCH', 'TINY11_PRESERVEWINRE', 'TINY11_DOTNET35', 'TINY11_BACKUPDRIVERS', 'TINY11_SKIPCLEANUP', 'TINY11_NONINTERACTIVE')) {
             Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
         }
     }
@@ -247,6 +255,10 @@ if ($Variant -eq 'Core' -and -not $EnableDotnet35 -and -not $NonInteractive) {
     $raw = Read-Default 'Enable .NET Framework 3.5 (Core only)? [y/N]' 'N'
     if ($raw -match '^[yY]') { $EnableDotnet35 = $true }
 }
+if (-not $BackupDrivers -and -not $NonInteractive) {
+    $raw = Read-Default 'Backup drivers from this PC and add them to the ISO? [Y/n]' 'Y'
+    if ($raw -notmatch '^[nN]') { $BackupDrivers = $true }
+}
 
 #---------[ Resolve the Windows 11 source ]---------#
 $mountedByUs = $false
@@ -302,6 +314,7 @@ Write-Host "  Index   : $Index"
 Write-Host "  Scratch : $scratchLabel"
 Write-Host "  Free    : ${freeGB}GB on ${targetDrive}:"
 if ($Variant -ne 'Standard') { Write-Host "  WinRE   : $winreLabel" }
+if ($BackupDrivers) { Write-Host '  Drivers : exported from this PC + injected' }
 Write-Host "  Output  : $outputDir"
 Write-Host ''
 if (-not $NonInteractive) {
@@ -330,6 +343,7 @@ if ($Scratch) { $builderParams.SCRATCH = $Scratch }
 if ($SkipCleanup) { $builderParams.SkipCleanup = $true }
 if ($PreserveWinRE -and $Variant -ne 'Standard') { $builderParams.PreserveWinRE = $true }
 if ($EnableDotnet35 -and $Variant -eq 'Core') { $builderParams.ENABLE_DOTNET35 = $true }
+if ($BackupDrivers) { $builderParams.BackupDrivers = $true }
 
 Write-Host ''
 Write-Host "Starting $Variant build - this takes 30-80 minutes, do not close the window..." -ForegroundColor Green
@@ -345,6 +359,19 @@ try {
     }
 }
 $timer.Stop()
+
+#---------[ Keep the driver backup ]---------#
+# The checkout is replaced on the next run, so move host_drivers\ to a
+# persistent location first.
+$driverBackupSource = Join-Path $scriptsDir 'host_drivers'
+if (Test-Path $driverBackupSource) {
+    $driverDest = Join-Path $workRoot 'host_drivers'
+    New-Item -ItemType Directory -Force -Path $driverDest | Out-Null
+    Copy-Item -Path (Join-Path $driverBackupSource '*') -Destination $driverDest -Recurse -Force
+    Remove-Item -LiteralPath $driverBackupSource -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host ''
+    Write-Host "Driver backup saved to: $driverDest" -ForegroundColor Cyan
+}
 
 #---------[ Collect the result ]---------#
 $producedIso = switch ($Variant) {

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Headless script to build a trimmed-down Windows 11 image for CI/CD automation.
 
@@ -8,7 +8,8 @@
     Uses only Microsoft utilities like DISM, with oscdimg.exe from Windows ADK.
 
 .PARAMETER ISO
-    Drive letter of the mounted Windows 11 ISO (required, e.g., E)
+    Drive letter of the mounted Windows 11 ISO (e.g., E), or the full path to a
+    downloaded Windows 11 .iso file - a file path is mounted automatically.
 
 .PARAMETER INDEX
     Windows image index to process (required, e.g., 1 for Home, 6 for Pro)
@@ -16,12 +17,17 @@
 .PARAMETER SCRATCH
     Drive letter for scratch disk operations (optional, defaults to script root)
 
+.PARAMETER BackupDrivers
+    Export third-party drivers from the running Windows installation into
+    host_drivers\ and inject them into the new image (install.wim + boot.wim)
+
 .PARAMETER SkipCleanup
     Skip cleanup of temporary files after ISO creation (optional, for debugging)
 
 .EXAMPLE
     .\tiny11maker-headless.ps1 -ISO E -INDEX 1
     .\tiny11maker-headless.ps1 -ISO E -INDEX 6 -SCRATCH D
+    .\tiny11maker-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 6 -BackupDrivers
 
 .NOTES
     Original Author: ntdevlabs
@@ -36,8 +42,7 @@
 #---------[ Parameters ]---------#
 [CmdletBinding()]
 param (
-    [Parameter(Mandatory=$true, HelpMessage="Drive letter of mounted Windows 11 ISO (e.g., E)")]
-    [ValidatePattern('^[c-zC-Z]$')]
+    [Parameter(Mandatory=$true, HelpMessage="Drive letter of a mounted Windows 11 ISO (e.g., E) or path to a .iso file")]
     [string]$ISO,
     
     [Parameter(Mandatory=$true, HelpMessage="Windows image index (1=Home, 6=Pro, etc.)")]
@@ -49,7 +54,10 @@ param (
     [string]$SCRATCH,
     
     [Parameter(Mandatory=$false, HelpMessage="Skip cleanup of temporary files")]
-    [switch]$SkipCleanup
+    [switch]$SkipCleanup,
+
+    [Parameter(Mandatory=$false, HelpMessage="Export drivers from this PC into host_drivers\ and inject them into the image")]
+    [switch]$BackupDrivers
 )
 
 #---------[ Error Handling ]---------#
@@ -63,7 +71,14 @@ if (-not $SCRATCH) {
     $ScratchDisk = $SCRATCH + ":"
 }
 
-$DriveLetter = $ISO + ":"
+$script:MountedIsoPath = $null
+$script:DriverCount = 0
+if ($ISO -match '^[a-zA-Z]:?$') {
+    $DriveLetter = $ISO.TrimEnd(':').ToUpper() + ':'
+} else {
+    $DriveLetter = $null  # .iso file path - mounted by Initialize-IsoSource
+}
+$driverBackupDir = Join-Path $PSScriptRoot 'host_drivers'
 $wimFilePath = "$ScratchDisk\tiny11\sources\install.wim"
 $scratchDir = "$ScratchDisk\scratchdir"
 $tiny11Dir = "$ScratchDisk\tiny11"
@@ -77,6 +92,120 @@ function Write-Log {
     $logMessage = "[$timestamp] [$Level] $Message"
     Write-Output $logMessage
     Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
+}
+
+function Initialize-IsoSource {
+    # -ISO accepts either a mounted drive letter (E) or a path to a .iso file.
+    if ($DriveLetter) {
+        Write-Log "Using mounted ISO source at $DriveLetter"
+        return
+    }
+
+    $isoPath = $ISO.Trim().Trim('"')
+    if ($isoPath -notmatch '\.iso$') {
+        throw "Invalid -ISO value '$ISO'. Use a drive letter of a mounted ISO (e.g., E) or the path to a .iso file (e.g., D:\ISOs\Win11.iso)."
+    }
+    if (-not [System.IO.Path]::IsPathRooted($isoPath)) {
+        $isoPath = Join-Path -Path (Get-Location).Path -ChildPath $isoPath
+    }
+    $isoPath = [System.IO.Path]::GetFullPath($isoPath)
+    if (-not (Test-Path -LiteralPath $isoPath -PathType Leaf)) {
+        throw "ISO file not found: $isoPath"
+    }
+
+    $image = Get-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue
+    $alreadyAttached = [bool]($image -and $image.Attached)
+    if ($alreadyAttached) {
+        Write-Log "ISO already mounted: $isoPath"
+    } else {
+        Write-Log "Mounting ISO: $isoPath"
+        $image = Mount-DiskImage -ImagePath $isoPath -PassThru -StorageType ISO
+    }
+
+    $letter = $null
+    foreach ($attempt in 1..30) {
+        $volume = $image | Get-Volume -ErrorAction SilentlyContinue
+        if ($volume -and $volume.DriveLetter) { $letter = [string]$volume.DriveLetter; break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $letter) { throw "Could not determine the drive letter of the mounted ISO: $isoPath" }
+
+    $script:DriveLetter = "${letter}:"
+    if (-not $alreadyAttached) { $script:MountedIsoPath = $isoPath }
+    Write-Log "ISO mounted at $($script:DriveLetter)"
+}
+
+function Dismount-SourceIso {
+    if (-not $script:MountedIsoPath) { return }
+    try {
+        $image = Get-DiskImage -ImagePath $script:MountedIsoPath -ErrorAction SilentlyContinue
+        if ($image -and $image.Attached) {
+            Write-Log "Dismounting source ISO: $($script:MountedIsoPath)"
+            $image | Dismount-DiskImage -ErrorAction Stop | Out-Null
+        }
+    } catch {
+        Write-Log "Could not dismount source ISO: $_" "WARN"
+    } finally {
+        $script:MountedIsoPath = $null
+    }
+}
+
+function Export-BackupDrivers {
+    if (-not $BackupDrivers) { return }
+
+    try {
+        $productName = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name ProductName).ProductName
+        if ($productName -match 'Windows 11') { Write-Log "Host operating system: $productName" }
+        else { Write-Log "Host operating system is '$productName' - exported drivers may not match Windows 11." "WARN" }
+    } catch {
+        Write-Log "Could not determine the host operating system version" "WARN"
+    }
+
+    $existing = @(Get-ChildItem -Path $driverBackupDir -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue)
+    if ($existing.Count -gt 0) {
+        $script:DriverCount = $existing.Count
+        Write-Log "Reusing existing driver backup: $driverBackupDir ($($existing.Count) driver packages)"
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path $driverBackupDir | Out-Null
+    Write-Log "Exporting third-party drivers from this PC to $driverBackupDir..."
+    $output = & dism /English /online /export-driver "/destination:$driverBackupDir" 2>&1
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
+        $output | ForEach-Object { Write-Log "$_" "ERROR" }
+        throw "Driver export failed (DISM exit code $LASTEXITCODE)"
+    }
+
+    $count = @(Get-ChildItem -Path $driverBackupDir -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue).Count
+    $script:DriverCount = $count
+    if ($count -eq 0) {
+        Write-Log "No third-party drivers found on this PC - nothing to back up." "WARN"
+    } else {
+        Write-Log "Backed up $count driver packages to $driverBackupDir"
+    }
+}
+
+function Add-BackupDrivers {
+    param(
+        [Parameter(Mandatory=$true)][string]$TargetPath,
+        [Parameter(Mandatory=$false)][string]$TargetName = 'image'
+    )
+    if (-not $BackupDrivers) { return }
+    if ($script:DriverCount -le 0) {
+        Write-Log "No exported drivers available - skipping driver injection into $TargetName." "WARN"
+        return
+    }
+
+    Write-Log "Injecting $script:DriverCount driver packages into $TargetName..."
+    $output = & dism /English /image:"$TargetPath" /add-driver "/driver:$driverBackupDir" /recurse 2>&1
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
+        $output | ForEach-Object { Write-Log "$_" "WARN" }
+        Write-Log "Driver injection into $TargetName reported errors (exit code $LASTEXITCODE) - continuing." "WARN"
+        return
+    }
+    $added = @($output | Where-Object { "$_" -match 'Installing driver package' }).Count
+    if ($added -gt 0) { Write-Log "Staged $added driver package(s) into $TargetName" }
+    else { Write-Log "No matching driver packages staged into $TargetName (all were skipped)." "WARN" }
 }
 
 function Set-RegistryValue {
@@ -835,6 +964,8 @@ function Process-BootImage {
     
     Unload-RegistryHives
     
+    Add-BackupDrivers -TargetPath $scratchDir -TargetName 'boot.wim'
+    
     Write-Log "Dismounting boot.wim..."
     Dismount-WindowsImage -Path $scratchDir -Save
     
@@ -938,7 +1069,9 @@ try {
     Write-Log "Author: kelexine (https://github.com/kelexine)"
     Write-Log "Parameters: ISO=$ISO, INDEX=$INDEX, SCRATCH=$ScratchDisk"
     
+    Initialize-IsoSource
     Test-Prerequisites
+    Export-BackupDrivers
     
     Resolve-ImageIndex
     
@@ -970,6 +1103,7 @@ try {
     
     # Finalization phase
     Optimize-WindowsImage
+    Add-BackupDrivers -TargetPath $scratchDir -TargetName 'install.wim'
     Dismount-AndExport
     Process-BootImage
     Create-TinyISO
@@ -977,6 +1111,7 @@ try {
     
     # Cleanup
     Invoke-Cleanup
+    Dismount-SourceIso
     
     Write-Log "=== Tiny11 Build Completed Successfully ===" "INFO"
     Write-Log "Output: $outputISO"
@@ -989,11 +1124,13 @@ try {
     
     # Emergency cleanup
     try {
+        Dismount-SourceIso
+
         Get-WindowsImage -Mounted | ForEach-Object {
             Write-Log "Emergency dismount: $($_.Path)" "WARN"
             Dismount-WindowsImage -Path $_.Path -Discard -ErrorAction SilentlyContinue
         }
-        
+
         Unload-RegistryHives -ErrorAction SilentlyContinue
     } catch {
         Write-Log "Emergency cleanup failed: $_" "ERROR"

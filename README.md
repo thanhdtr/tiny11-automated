@@ -125,16 +125,22 @@ Perfect for beginners and automated deployments:
 For advanced users and local builds:
 
 ```powershell
-# 1. Download or mount Windows 11 ISO
-# 2. Note the drive letter (e.g., E:)
-# 3. Run PowerShell as Administrator
-# 4. Set execution policy
+# Fastest: one-liner bootstrap (downloads this repo, asks for your ISO, builds)
+irm https://raw.githubusercontent.com/thanhdtr/tiny11-automated/main/run.ps1 | iex
+
+# Or run the builders yourself:
+# 1. Download the Windows 11 ISO (or mount one and note its drive letter, e.g. E:)
+# 2. Run PowerShell as Administrator
+# 3. Set execution policy
 Set-ExecutionPolicy Bypass -Scope Process
 
-# 5. Choose your variant:
+# 4. Choose your variant - -ISO accepts a file path (mounted automatically) or a drive letter:
 
 # Standard Tiny11 (Recommended for daily use)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1
+
+# From a downloaded .iso file
+.\scripts\tiny11maker-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 1
 
 # Tiny11 Core (Ultra-minimal, VM/testing only)
 .\scripts\tiny11coremaker-headless.ps1 -ISO E -INDEX 6
@@ -144,6 +150,9 @@ Set-ExecutionPolicy Bypass -Scope Process
 
 # With .NET 3.5 (Core variant only)
 .\scripts\tiny11coremaker-headless.ps1 -ISO E -INDEX 1 -ENABLE_DOTNET35
+
+# Back up this PC's drivers into the ISO (auto-installed on the new Windows)
+.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -BackupDrivers
 ```
 
 **System Requirements**: Windows 10/11, PowerShell 5.1+, 30GB+ free space, Admin rights
@@ -272,9 +281,10 @@ tiny11-automated/
 
 ```powershell
 .\tiny11maker-headless.ps1
-    -ISO <string>              # Drive letter of mounted ISO (e.g., "E")
+    -ISO <string>              # Drive letter of mounted ISO (e.g., "E") or path to a .iso file
     -INDEX <int>               # Image index (1=Home, 4=Education, 6=Pro, 7=Pro N)
     [-SCRATCH <string>]        # Optional: Scratch disk (default: script directory)
+    [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
     [-SkipCleanup]             # Optional: Keep temp files for debugging
 ```
 
@@ -290,9 +300,10 @@ tiny11-automated/
 
 ```powershell
 .\nano11builder-headless.ps1
-    -ISO <string>              # Drive letter of mounted ISO
+    -ISO <string>              # Drive letter of mounted ISO or path to a .iso file
     -INDEX <int>               # Image index
     [-SCRATCH <string>]        # Optional: Scratch disk
+    [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
     [-SkipCleanup]             # Optional: Keep temp files
     [-PreserveWinRE]           # Keep winre.wim intact (required for real hardware / 24H2+ to avoid 0x8007000B)
 ```
@@ -314,6 +325,13 @@ tiny11-automated/
 
 # Custom scratch drive (useful for limited C:\ space)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -SCRATCH D
+
+# Build straight from a downloaded .iso file (mounted automatically)
+.\scripts\tiny11maker-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 6
+
+# Back up this PC's drivers into host_drivers\ and add them to the image -
+# they auto-install on the freshly installed Windows (no driver downloads)
+.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -BackupDrivers
 
 # Debug mode (keeps temporary files)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -SkipCleanup
