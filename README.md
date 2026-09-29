@@ -97,6 +97,9 @@ The only network traffic the build performs:
 2. Downloading this repository's scripts (GitHub)
 3. Downloading `oscdimg.exe` from Microsoft - only if the Windows ADK is not installed
 4. Storing results in **your own** repository (Actions artifacts / Releases)
+5. **Only when you opt in with `-Apps`**: winutil's script (`christitus.com/win`) and its
+   `applications.json` catalog (GitHub raw) are fetched at build time; at first logon winutil
+   uses **winget** to download the apps you selected (Microsoft + vendor package sources)
 
 ---
 
@@ -125,7 +128,8 @@ Perfect for beginners and automated deployments:
 For advanced users and local builds:
 
 ```powershell
-# Fastest: one-liner bootstrap (downloads this repo, asks for your ISO, builds)
+# Fastest: one-liner bootstrap (downloads this repo, asks for your ISO, the
+# Windows Defender choice and which apps to preinstall, then builds)
 irm https://raw.githubusercontent.com/thanhdtr/tiny11-automated/main/run.ps1 | iex
 
 # Or run the builders yourself:
@@ -153,6 +157,12 @@ Set-ExecutionPolicy Bypass -Scope Process
 
 # Back up this PC's drivers into the ISO (auto-installed on the new Windows)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -BackupDrivers
+
+# Windows Defender: fully remove it - or -Defender Disable / -Defender Keep
+.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Defender Remove
+
+# Preinstall third-party apps silently at first logon (winutil catalog keys)
+.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Apps '7zip,chrome,vlc'
 ```
 
 **System Requirements**: Windows 10/11, PowerShell 5.1+, 30GB+ free space, Admin rights
@@ -209,9 +219,9 @@ Set-ExecutionPolicy Bypass -Scope Process
   </tr>
   <tr>
     <td><strong>Windows Defender</strong></td>
-    <td>✅ Included</td>
-    <td>❌ Disabled</td>
-    <td>❌ Removed</td>
+    <td>⚙️ Keep by default (<code>-Defender</code> Keep / Disable / Remove)</td>
+    <td>⚙️ Remove by default (<code>-Defender</code> Keep / Disable / Remove)</td>
+    <td>⚙️ Remove by default (<code>-Defender</code> Keep / Disable / Remove)</td>
   </tr>
   <tr>
     <td><strong>Serviceability</strong></td>
@@ -285,6 +295,8 @@ tiny11-automated/
     -INDEX <int>               # Image index (1=Home, 4=Education, 6=Pro, 7=Pro N)
     [-SCRATCH <string>]        # Optional: Scratch disk (default: script directory)
     [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
+    [-Defender <string>]       # Optional: Keep (Standard default), Disable or Remove (Core/Nano default)
+    [-Apps <string>]           # Optional: winutil app keys for first-logon install (e.g. "7zip,chrome") or "winutil"
     [-SkipCleanup]             # Optional: Keep temp files for debugging
 ```
 
@@ -304,6 +316,8 @@ tiny11-automated/
     -INDEX <int>               # Image index
     [-SCRATCH <string>]        # Optional: Scratch disk
     [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
+    [-Defender <string>]       # Optional: Keep, Disable or Remove (default: Remove)
+    [-Apps <string>]           # Optional: winutil app keys for first-logon install (e.g. "7zip,chrome") or "winutil"
     [-SkipCleanup]             # Optional: Keep temp files
     [-PreserveWinRE]           # Keep winre.wim intact (required for real hardware / 24H2+ to avoid 0x8007000B)
 ```
@@ -333,9 +347,68 @@ tiny11-automated/
 # they auto-install on the freshly installed Windows (no driver downloads)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -BackupDrivers
 
+# Windows Defender options: Remove (packages + files), Disable (reversible),
+# Keep (no changes). Core/Nano default to Remove, Standard defaults to Keep.
+.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Defender Remove
+.\scripts\tiny11coremaker-headless.ps1 -ISO E -INDEX 6 -Defender Keep
+
+# Third-party apps via winutil: keys from applications.json, installed silently
+# at first logon (needs internet then). "winutil" alone only bundles the tool.
+.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Apps '7zip,chrome,vlc'
+.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Apps 'winutil'
+
 # Debug mode (keeps temporary files)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -SkipCleanup
 ```
+
+---
+
+## 🛡️ Windows Defender Options (`-Defender`)
+
+All three builders accept `-Defender Keep|Disable|Remove`. `run.ps1` prompts with a
+numbered choice (Standard defaults to **Keep**, Core/Nano to **Remove**):
+
+| Mode | What happens |
+|------|--------------|
+| **Keep** | No Defender changes at all |
+| **Disable** | Registry policies off (`DisableAntiSpyware`, real-time protection set, Spynet), services disabled (WinDefend, WdNisSvc, WdNisDrv, WdFilter, Sense, SecurityHealthService), Defender scheduled tasks removed, SmartScreen off, virus Settings page hidden. Files stay on disk → reversible |
+| **Remove** | Everything in **Disable** *plus* `Windows-Defender-Client-Package` and the Windows Security app (SecHealthUI) uninstalled via DISM, then leftovers force-deleted (`Program Files\Windows Defender`, `ProgramData\Microsoft\Windows Defender`, `WdFilter.sys`, ...) |
+
+After **Remove**, install a third-party AV before browsing. Getting Defender back means
+reinstalling the *Windows Defender Platform* optional feature or resetting Windows.
+
+---
+
+## 📦 Third-Party Software (`-Apps`)
+
+`-Apps` stages [winutil](https://github.com/Christitustech/winutil) into the image:
+
+1. `winutil.ps1` is bundled into `C:\Windows\Tiny11\` plus a `winutil.cmd` launcher on
+   the Public Desktop (recovery path if the auto-install ever fails)
+2. Your key list is stored as `install-apps.json`
+3. A `RunOnce` entry silently installs the selected apps **at first logon** (UAC is
+   disabled in this image, so there is no prompt) and logs to `C:\ProgramData\tiny11\apps.log`
+4. Keys are validated against winutil's live `applications.json` catalog at build time;
+   interactive `run.ps1` builds show a full scrollable picker
+   (Space = toggle, Enter = confirm, Esc = skip)
+
+Use `-Apps 'winutil'` to bundle the tool without auto-installing anything.
+Internet is required at first logon (winget downloads the chosen packages).
+
+---
+
+## ⚡ Always-On Image Defaults
+
+Applied unconditionally by every builder (no flag needed):
+
+- **UAC disabled** - `EnableLUA=0` (+ `ConsentPromptBehaviorAdmin=0`, secure-desktop
+  values off) written to the image policy key at every boot. Nothing on this image
+  re-enables it: there is no domain GPO/MDM, and Windows Update preserves HKLM policy
+  keys. Revert with `reg add .../Policies\System /v EnableLUA /t REG_DWORD /d 1`.
+  Caveats: some Store apps/security notices warn with UAC off; "Reset this PC" restores defaults.
+- **Ultimate Performance power plan** - Microsoft's hidden scheme is duplicated and
+  activated at first logon (`powercfg` via RunOnce)
+- **Fast Startup disabled** - `HiberbootEnabled=0`: clean full shutdowns, no hybrid boot
 
 ---
 
@@ -411,7 +484,7 @@ tiny11-automated/
 - Steps Recorder
 - LA57 CPU compatibility layer
 - Language features (OCR, Speech, Handwriting)
-- Windows Defender (Core/Nano only)
+- Windows Defender (Core/Nano by default; any variant with `-Defender Remove`)
 - Printer drivers (Nano only)
 - Scanner/MFD drivers (Nano only)
 
@@ -456,6 +529,9 @@ tiny11-automated/
 - Non-essential services disabled (4-13 depending on variant)
 - Diagnostic services removed
 - Telemetry services disabled
+- UAC permanently disabled (`EnableLUA=0`) - always on
+- Ultimate Performance power plan activated at first logon - always on
+- Fast Startup (HiberBoot) disabled - always on
 
 **Update & Cloud:**
 - Windows Update disabled (can be manually enabled in Standard)
@@ -710,22 +786,26 @@ Get-FileHash -Path "tiny11.iso" -Algorithm SHA256
    - Potential compatibility issues
    - Use at your own risk
 
-2. **Windows Defender Removed** (Core/Nano)
+2. **Windows Defender Removed or Disabled** (Core/Nano default; Standard opt-in via `-Defender`)
    - Install third-party antivirus (Avast, Kaspersky, etc.)
    - Keep antivirus updated
-   - Consider using Standard variant for better security
+   - Consider `-Defender Keep` for better security
 
-3. **Updates Disabled by Default**
+3. **UAC Disabled - always** (`EnableLUA=0` in every image)
+   - No elevation prompts: anything running as admin applies silently
+   - Re-enable after install: `reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA /t REG_DWORD /d 1 /f` + reboot
+
+4. **Updates Disabled by Default**
    - Manually enable if needed: `services.msc` → Windows Update
    - No automatic security patches
    - Monitor security advisories manually
 
-4. **Privacy vs. Functionality Trade-off**
+5. **Privacy vs. Functionality Trade-off**
    - Telemetry disabled → Better privacy
    - Some features may not work without telemetry
    - Cloud features limited/disabled
 
-5. **Production Use NOT Recommended**
+6. **Production Use NOT Recommended**
    - Use for testing/development only
    - Not suitable for business-critical systems
    - Consider official Windows for production

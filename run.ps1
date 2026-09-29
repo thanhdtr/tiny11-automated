@@ -12,6 +12,8 @@
       * download this repository to %LOCALAPPDATA%\tiny11-automated\repo
       * ask for the Windows 11 source (path to an .iso file, or the drive
         letter of an ISO you already mounted - files are mounted for you)
+      * ask how to handle Windows Defender (Keep / Disable / Remove)
+      * show a full app picker that preinstalls software at first logon (winutil)
       * run the selected headless builder (Standard / Core / Nano)
       * move the finished ISO to %LOCALAPPDATA%\tiny11-automated\output
 
@@ -43,6 +45,17 @@
 .PARAMETER BackupDrivers
     Export third-party drivers from this PC into host_drivers\ and add them to
     the new image (install.wim + boot.wim). Prompted (default Yes) when omitted.
+
+.PARAMETER Defender
+    Windows Defender handling: Keep, Disable or Remove. Prompted (numbered
+    choice; default Keep for Standard, Remove for Core/Nano) when omitted.
+    Keep    = no changes. Disable = policies/services/tasks off (reversible).
+    Remove  = Defender platform + Windows Security app uninstalled, files deleted.
+
+.PARAMETER Apps
+    Comma-separated winutil app keys to install silently on first logon
+    (e.g. '7zip,chrome,vlc'). Interactive runs show a full catalog menu
+    (Space = select, Enter = confirm, Esc = skip) when omitted.
 
 .PARAMETER SkipCleanup
     Keep temporary build files for debugging.
@@ -78,6 +91,11 @@ param(
 
     [switch]$BackupDrivers,
 
+    [ValidateSet('Keep', 'Disable', 'Remove')]
+    [string]$Defender,
+
+    [string]$Apps,
+
     [switch]$SkipCleanup,
 
     [switch]$NonInteractive
@@ -102,6 +120,8 @@ if (-not $Scratch -and $env:TINY11_SCRATCH) { $Scratch = $env:TINY11_SCRATCH }
 if ($env:TINY11_PRESERVEWINRE -eq '1') { $PreserveWinRE = $true }
 if ($env:TINY11_DOTNET35 -eq '1') { $EnableDotnet35 = $true }
 if ($env:TINY11_BACKUPDRIVERS -eq '1') { $BackupDrivers = $true }
+if (-not $Defender -and $env:TINY11_DEFENDER) { $Defender = $env:TINY11_DEFENDER }
+if (-not $Apps -and $env:TINY11_APPS) { $Apps = $env:TINY11_APPS }
 if ($env:TINY11_SKIPCLEANUP -eq '1') { $SkipCleanup = $true }
 if ($env:TINY11_NONINTERACTIVE -eq '1') { $NonInteractive = $true }
 
@@ -120,6 +140,115 @@ function Set-ChildEnv {
     if ($Value) { Set-Item -Path "Env:$Name" -Value $Value }
 }
 
+function Select-ThirdPartyApps {
+    # Full multi-select console menu over winutil's applications.json catalog.
+    # Returns comma-separated keys ('' when skipped). Falls back to a plain
+    # comma-separated prompt if the console does not support the TUI.
+    Write-Host ''
+    Write-Host 'Loading third-party app catalog from winutil...' -ForegroundColor Cyan
+    $json = $null
+    try {
+        $json = (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/Christitustech/winutil/main/config/applications.json' -UseBasicParsing -TimeoutSec 60).Content | ConvertFrom-Json
+    } catch {
+        Write-Host "Could not load the winutil app catalog ($_)." -ForegroundColor Yellow
+        return (Read-Host 'Enter app keys manually (comma-separated, e.g. 7zip,chrome,vlc) or press Enter to skip').Trim()
+    }
+
+    $items = New-Object System.Collections.Generic.List[object]
+    $items.Add([pscustomobject]@{ Type = 'header'; Text = 'Tool'; Key = ''; Label = '' })
+    $toolLabel = 'winutil - tool only (Desktop shortcut, run manually, no auto-install)'
+    $items.Add([pscustomobject]@{ Type = 'app'; Text = ''; Key = 'winutil'; Label = $toolLabel })
+
+    $apps = @()
+    foreach ($p in $json.PSObject.Properties) {
+        $label = $p.Name
+        $category = 'Apps'
+        if ($p.Value) {
+            if ($p.Value.PSObject.Properties['content'] -and $p.Value.content) { $label = [string]$p.Value.content }
+            if ($p.Value.PSObject.Properties['category'] -and $p.Value.category) { $category = [string]$p.Value.category }
+        }
+        $apps += [pscustomobject]@{ Key = $p.Name; Label = $label; Category = $category }
+    }
+    $lastCat = ''
+    foreach ($e in ($apps | Sort-Object Category, Label)) {
+        if ($e.Category -ne $lastCat) {
+            $items.Add([pscustomobject]@{ Type = 'header'; Text = $e.Category; Key = ''; Label = '' })
+            $lastCat = $e.Category
+        }
+        $items.Add([pscustomobject]@{ Type = 'app'; Text = ''; Key = $e.Key; Label = $e.Label })
+    }
+
+    $selectable = @()
+    for ($i = 0; $i -lt $items.Count; $i++) { if ($items[$i].Type -eq 'app') { $selectable += $i } }
+
+    $selected = New-Object System.Collections.Generic.List[string]
+    $cursor   = 0
+    $scrollTop = 0
+
+    try {
+        $viewH = [Console]::WindowHeight - 7
+        if ($viewH -lt 6) { $viewH = 6 }
+        $maxW = [Console]::WindowWidth - 2
+        if ($maxW -lt 20) { $maxW = 20 }
+        [Console]::Clear()
+
+        $done = $false
+        $cancel = $false
+        while (-not $done) {
+            $cursorItem = $selectable[$cursor]
+            if ($cursorItem -lt $scrollTop) { $scrollTop = $cursorItem }
+            if ($cursorItem -gt $scrollTop + $viewH - 1) { $scrollTop = $cursorItem - $viewH + 1 }
+            $lastItem = [Math]::Min($items.Count - 1, $scrollTop + $viewH - 1)
+
+            [Console]::SetCursorPosition(0, 0)
+            Write-Host ('=' * $maxW) -ForegroundColor DarkGray
+            Write-Host ' Select apps to install silently at first logon - Space=toggle, Enter=confirm, Esc=skip' -ForegroundColor Cyan
+            Write-Host " Selected: $($selected.Count) of $($selectable.Count)  |  arrows/PgUp/PgDn/Home/End to move" -ForegroundColor Yellow
+            for ($i = $scrollTop; $i -le $lastItem; $i++) {
+                $it = $items[$i]
+                if ($it.Type -eq 'header') {
+                    $hdr = "  [$($it.Text)]"
+                    if ($hdr.Length -gt $maxW) { $hdr = $hdr.Substring(0, $maxW) }
+                    Write-Host $hdr -ForegroundColor DarkCyan
+                } else {
+                    $mark = if ($selected -contains $it.Key) { '[*]' } else { '[ ]' }
+                    $prefix = if ($i -eq $cursorItem) { '> ' } else { '  ' }
+                    $color = if ($i -eq $cursorItem) { 'White' } elseif ($selected -contains $it.Key) { 'Green' } else { 'Gray' }
+                    $line = "$prefix$mark $($it.Label)"
+                    if ($line.Length -gt $maxW) { $line = $line.Substring(0, $maxW - 1) + [char]0x2026 }
+                    Write-Host $line -ForegroundColor $color
+                }
+            }
+            for ($i = 3 + ($lastItem - $scrollTop + 1); $i -lt [Console]::WindowHeight; $i++) {
+                [Console]::SetCursorPosition(0, $i)
+                Write-Host (' ' * $maxW)
+            }
+
+            $key = [Console]::ReadKey($true)
+            switch ($key.Key) {
+                'DownArrow' { if ($cursor -lt $selectable.Count - 1) { $cursor++ } }
+                'UpArrow'   { if ($cursor -gt 0) { $cursor-- } }
+                'PageDown'  { $cursor = [Math]::Min($selectable.Count - 1, $cursor + $viewH) }
+                'PageUp'    { $cursor = [Math]::Max(0, $cursor - $viewH) }
+                'Home'      { $cursor = 0 }
+                'End'       { $cursor = $selectable.Count - 1 }
+                'Spacebar'  {
+                    $k = $items[$selectable[$cursor]].Key
+                    if ($selected -contains $k) { [void]$selected.Remove($k) } else { [void]$selected.Add($k) }
+                }
+                'Enter'  { $done = $true }
+                'Escape' { $done = $true; $cancel = $true }
+            }
+        }
+        [Console]::Clear()
+        if ($cancel) { return '' }
+        return ($selected -join ',')
+    } catch {
+        Write-Host "Interactive menu unavailable ($_)." -ForegroundColor Yellow
+        return (Read-Host 'Enter app keys manually (comma-separated, e.g. 7zip,chrome,vlc) or press Enter to skip').Trim()
+    }
+}
+
 #---------[ Administrator check ]---------#
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
@@ -132,6 +261,8 @@ if (-not $isAdmin) {
         if ($PreserveWinRE) { Set-ChildEnv 'TINY11_PRESERVEWINRE' '1' }
         if ($EnableDotnet35) { Set-ChildEnv 'TINY11_DOTNET35' '1' }
         if ($BackupDrivers) { Set-ChildEnv 'TINY11_BACKUPDRIVERS' '1' }
+        if ($Defender) { Set-ChildEnv 'TINY11_DEFENDER' $Defender }
+        if ($Apps) { Set-ChildEnv 'TINY11_APPS' $Apps }
         if ($SkipCleanup) { Set-ChildEnv 'TINY11_SKIPCLEANUP' '1' }
         if ($NonInteractive) { Set-ChildEnv 'TINY11_NONINTERACTIVE' '1' }
 
@@ -142,7 +273,7 @@ if (-not $isAdmin) {
         Write-Host 'Elevation was cancelled.' -ForegroundColor Red
         Write-Host "Re-run this in a PowerShell window opened as Administrator, or save run.ps1 and execute it there." -ForegroundColor Yellow
     } finally {
-        foreach ($name in @('TINY11_VARIANT', 'TINY11_ISO', 'TINY11_INDEX', 'TINY11_SCRATCH', 'TINY11_PRESERVEWINRE', 'TINY11_DOTNET35', 'TINY11_BACKUPDRIVERS', 'TINY11_SKIPCLEANUP', 'TINY11_NONINTERACTIVE')) {
+        foreach ($name in @('TINY11_VARIANT', 'TINY11_ISO', 'TINY11_INDEX', 'TINY11_SCRATCH', 'TINY11_PRESERVEWINRE', 'TINY11_DOTNET35', 'TINY11_BACKUPDRIVERS', 'TINY11_DEFENDER', 'TINY11_APPS', 'TINY11_SKIPCLEANUP', 'TINY11_NONINTERACTIVE')) {
             Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
         }
     }
@@ -259,6 +390,34 @@ if (-not $BackupDrivers -and -not $NonInteractive) {
     $raw = Read-Default 'Backup drivers from this PC and add them to the ISO? [Y/n]' 'Y'
     if ($raw -notmatch '^[nN]') { $BackupDrivers = $true }
 }
+if (-not $Defender -and -not $NonInteractive) {
+    $defenderDefault = if ($Variant -eq 'Standard') { '1' } else { '3' }
+    Write-Host ''
+    Write-Host 'Windows Defender:' -ForegroundColor Cyan
+    Write-Host '  1) Keep    - no changes (default for Standard)'
+    Write-Host '  2) Disable - policies/services/tasks off, reversible'
+    Write-Host '  3) Remove  - packages and files fully deleted (default for Core/Nano)'
+    $raw = Read-Default 'Choice' $defenderDefault
+    $Defender = switch ($raw) {
+        '1'     { 'Keep' }
+        '2'     { 'Disable' }
+        '3'     { 'Remove' }
+        'k'     { 'Keep' }
+        'd'     { 'Disable' }
+        'r'     { 'Remove' }
+        default { if ($defenderDefault -eq '3') { 'Remove' } else { 'Keep' } }
+    }
+}
+if (-not $Defender) {
+    $Defender = if ($Variant -eq 'Standard') { 'Keep' } else { 'Remove' }
+}
+if ($Defender -notin @('Keep', 'Disable', 'Remove')) {
+    throw "Invalid -Defender value '$Defender'. Use Keep, Disable or Remove."
+}
+
+if (-not $Apps -and -not $NonInteractive) {
+    $Apps = Select-ThirdPartyApps
+}
 
 #---------[ Resolve the Windows 11 source ]---------#
 $mountedByUs = $false
@@ -315,6 +474,8 @@ Write-Host "  Scratch : $scratchLabel"
 Write-Host "  Free    : ${freeGB}GB on ${targetDrive}:"
 if ($Variant -ne 'Standard') { Write-Host "  WinRE   : $winreLabel" }
 if ($BackupDrivers) { Write-Host '  Drivers : exported from this PC + injected' }
+Write-Host "  Defender : $Defender"
+Write-Host "  Apps     : $(if ($Apps) { $Apps } else { 'none' })"
 Write-Host "  Output  : $outputDir"
 Write-Host ''
 if (-not $NonInteractive) {
@@ -344,6 +505,8 @@ if ($SkipCleanup) { $builderParams.SkipCleanup = $true }
 if ($PreserveWinRE -and $Variant -ne 'Standard') { $builderParams.PreserveWinRE = $true }
 if ($EnableDotnet35 -and $Variant -eq 'Core') { $builderParams.ENABLE_DOTNET35 = $true }
 if ($BackupDrivers) { $builderParams.BackupDrivers = $true }
+if ($Defender) { $builderParams.Defender = $Defender }
+if ($Apps) { $builderParams.Apps = $Apps }
 
 Write-Host ''
 Write-Host "Starting $Variant build - this takes 30-80 minutes, do not close the window..." -ForegroundColor Green

@@ -21,6 +21,17 @@
     Export third-party drivers from the running Windows installation into
     host_drivers\ and inject them into the new image (install.wim + boot.wim)
 
+.PARAMETER Defender
+    Windows Defender handling: Keep (default, no changes), Disable (policies,
+    services and scheduled tasks turned off, files left in place - reversible)
+    or Remove (Defender platform + Windows Security app uninstalled and files
+    deleted).
+
+.PARAMETER Apps
+    Comma-separated winutil app keys to install silently on first logon
+    (e.g. '7zip,chrome,vlc'), or the literal value 'winutil' to only bundle
+    the winutil tool (Desktop shortcut) without auto-installing anything.
+
 .PARAMETER SkipCleanup
     Skip cleanup of temporary files after ISO creation (optional, for debugging)
 
@@ -28,6 +39,8 @@
     .\tiny11maker-headless.ps1 -ISO E -INDEX 1
     .\tiny11maker-headless.ps1 -ISO E -INDEX 6 -SCRATCH D
     .\tiny11maker-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 6 -BackupDrivers
+    .\tiny11maker-headless.ps1 -ISO E -INDEX 6 -Defender Remove
+    .\tiny11maker-headless.ps1 -ISO E -INDEX 6 -Apps '7zip,chrome,vlc'
 
 .NOTES
     Original Author: ntdevlabs
@@ -57,7 +70,14 @@ param (
     [switch]$SkipCleanup,
 
     [Parameter(Mandatory=$false, HelpMessage="Export drivers from this PC into host_drivers\ and inject them into the image")]
-    [switch]$BackupDrivers
+    [switch]$BackupDrivers,
+
+    [Parameter(Mandatory=$false, HelpMessage="Windows Defender handling: Keep (no changes), Disable (policies/services/tasks off, reversible) or Remove (packages + files deleted)")]
+    [ValidateSet('Keep', 'Disable', 'Remove')]
+    [string]$Defender = 'Keep',
+
+    [Parameter(Mandatory=$false, HelpMessage="Comma-separated winutil app keys to install on first logon (e.g. '7zip,chrome,vlc'), or 'winutil' to only bundle the tool")]
+    [string]$Apps = ''
 )
 
 #---------[ Error Handling ]---------#
@@ -84,6 +104,9 @@ $scratchDir = "$ScratchDisk\scratchdir"
 $tiny11Dir = "$ScratchDisk\tiny11"
 $outputISO = "$PSScriptRoot\tiny11.iso"
 $logFile = "$PSScriptRoot\tiny11_$(Get-Date -Format yyyyMMdd_HHmmss).log"
+# Third-party app sources (-Apps) - only contacted when -Apps is used
+$appsCatalogUrl = 'https://raw.githubusercontent.com/Christitustech/winutil/main/config/applications.json'
+$winutilUrl = 'https://christitus.com/win'
 
 #---------[ Functions ]---------#
 function Write-Log {
@@ -206,6 +229,100 @@ function Add-BackupDrivers {
     $added = @($output | Where-Object { "$_" -match 'Installing driver package' }).Count
     if ($added -gt 0) { Write-Log "Staged $added driver package(s) into $TargetName" }
     else { Write-Log "No matching driver packages staged into $TargetName (all were skipped)." "WARN" }
+}
+
+function Test-AppsSelection {
+    # Validates -Apps keys against winutil's live catalog before any heavy work.
+    # Runs before the admin check so bad keys fail fast. 'winutil' is always valid.
+    if ([string]::IsNullOrWhiteSpace($Apps)) { return }
+    $keys = @($Apps -split '[,;]' | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    if ($keys.Count -eq 0) { return }
+    $toCheck = @($keys | Where-Object { $_ -ne 'winutil' })
+    if ($toCheck.Count -eq 0) {
+        Write-Log "Apps selection: winutil tool only"
+        return
+    }
+    $json = $null
+    try {
+        $json = (Invoke-WebRequest -Uri $appsCatalogUrl -UseBasicParsing -TimeoutSec 60).Content | ConvertFrom-Json
+    } catch {
+        Write-Log "Could not fetch winutil app catalog for validation ($_); continuing without key validation" "WARN"
+        return
+    }
+    $known = @($json.PSObject.Properties.Name)
+    $bad = @($toCheck | Where-Object { $known -notcontains $_ })
+    if ($bad.Count -gt 0) {
+        Write-Log "Unknown -Apps key(s): $($bad -join ', ')" "ERROR"
+        throw "Unknown -Apps key(s): $($bad -join ', '). Keys must come from winutil's applications.json (e.g. 7zip, chrome, vlc) or the literal value 'winutil'."
+    }
+    Write-Log "App selection validated: $($keys -join ', ')"
+}
+
+function Stage-ThirdPartyApps {
+    # Downloads winutil into the image and wires a silent first-logon install.
+    # Requires registry hives to be loaded (writes RunOnce) and the image mounted.
+    if ([string]::IsNullOrWhiteSpace($Apps)) { return }
+    $keys = @($Apps -split '[,;]' | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    if ($keys.Count -eq 0) { return }
+    $installKeys = @($keys | Where-Object { $_ -ne 'winutil' })
+
+    $stageDir = "$scratchDir\Windows\Tiny11"
+    New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+
+    try {
+        Invoke-WebRequest -Uri $winutilUrl -OutFile "$stageDir\winutil.ps1" -UseBasicParsing -TimeoutSec 180
+    } catch {
+        throw "Failed to download winutil from $winutilUrl : $_"
+    }
+    Write-Log "Bundled winutil.ps1 into image ($stageDir)"
+
+    # Desktop launcher - also the recovery path if the auto-install fails
+    $desktopDir = "$scratchDir\Users\Public\Desktop"
+    if (Test-Path $desktopDir) {
+        Set-Content -LiteralPath "$desktopDir\winutil.cmd" -Encoding ASCII -Value `
+            "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%SystemRoot%\Tiny11\winutil.ps1`"`r`npause"
+        Write-Log "Added winutil.cmd launcher to Public Desktop"
+    }
+
+    if ($installKeys.Count -eq 0) {
+        Write-Log "Apps: winutil tool bundled (no auto-install requested)"
+        return
+    }
+
+    ConvertTo-Json -InputObject @($installKeys) -Depth 3 | Set-Content -LiteralPath "$stageDir\install-apps.json" -Encoding UTF8
+    Write-Log "App config staged: $($installKeys -join ', ')"
+
+    # First-logon runner (single-quoted here-string: no expansion at build time)
+    $runner = @'
+$logPath = 'C:\ProgramData\tiny11\apps.log'
+function Write-AppLog([string]$Message) {
+    try { Add-Content -Path $logPath -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message" } catch { }
+}
+try {
+    New-Item -ItemType Directory -Force -Path 'C:\ProgramData\tiny11' | Out-Null
+    Write-AppLog 'Third-party app install starting'
+    $dir = Join-Path $env:SystemRoot 'Tiny11'
+    $scriptPath = Join-Path $dir 'winutil.ps1'
+    $configPath = Join-Path $dir 'install-apps.json'
+    if (-not (Test-Path $scriptPath)) { throw "winutil.ps1 not found at $scriptPath" }
+    if (-not (Test-Path $configPath)) { throw "install-apps.json not found at $configPath" }
+    $source = Get-Content -LiteralPath $scriptPath -Raw
+    try {
+        & ([ScriptBlock]::Create($source)) -Config $configPath -Run -Noui
+    } catch {
+        Write-AppLog "winutil -Noui invocation failed ($($_.Exception.Message)); retrying without -Noui"
+        & ([ScriptBlock]::Create($source)) -Config $configPath -Run
+    }
+    Write-AppLog 'Third-party app install finished'
+} catch {
+    Write-AppLog "FAILED: $($_.Exception.Message)"
+}
+'@
+    Set-Content -LiteralPath "$stageDir\install-apps.ps1" -Value $runner -Encoding UTF8
+
+    # Runs silently at first logon (UAC is disabled in this image)
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' 'Tiny11Apps' 'REG_SZ' 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Windows\Tiny11\install-apps.ps1'
+    Write-Log "First-logon app install registered (RunOnce -> C:\Windows\Tiny11\install-apps.ps1)"
 }
 
 function Set-RegistryValue {
@@ -621,6 +738,121 @@ function Remove-EdgeAndOneDrive {
     }
 }
 
+function Set-WindowsDefender {
+    # Applies the -Defender mode to the offline image while registry hives are
+    # loaded. Keep = no changes. Disable/Remove = policies, services and tasks
+    # turned off (Remove also has packages/files handled by Remove-DefenderPackages).
+    if ($Defender -eq 'Keep') {
+        Write-Log "Windows Defender: Keep (no changes)"
+        return
+    }
+    Write-Log "Windows Defender: $Defender"
+
+    # Policy switches read by the Defender platform at boot
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows Defender' 'DisableAntiSpyware' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows Defender' 'DisableAntiVirus' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' 'DisableRealtimeMonitoring' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' 'DisableBehaviorMonitoring' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' 'DisableOnAccessProtection' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' 'DisableScanOnRealtimeEnable' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' 'DisableIOAVProtection' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows Defender\Spynet' 'MAPSReporting' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows Defender\Spynet' 'SubmitSamplesConsent' 'REG_DWORD' '2'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows Defender\Spynet' 'DisableBlockAtFirstSeen' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' 'SmartScreenEnabled' 'REG_SZ' 'Off'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\System' 'EnableSmartScreen' 'REG_DWORD' '0'
+
+    # Services (Test-Path guard: never create keys for services that don't exist)
+    Write-Log "Disabling Windows Defender services..."
+    $servicePaths = @('WinDefend', 'WdNisSvc', 'WdNisDrv', 'WdFilter', 'Sense', 'SecurityHealthService')
+    foreach ($path in $servicePaths) {
+        if (Test-Path "HKLM:\zSYSTEM\ControlSet001\Services\$path") {
+            Set-RegistryValue "HKLM\zSYSTEM\ControlSet001\Services\$path" 'Start' 'REG_DWORD' '4'
+        }
+    }
+
+    # Defender scheduled tasks: offline task files + Task Scheduler cache
+    $defenderTasks = "$scratchDir\Windows\System32\Tasks\Windows Defender"
+    if (Test-Path $defenderTasks) {
+        Remove-Item -Path $defenderTasks -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Log "Removed Defender scheduled task files"
+    }
+    $taskCache = 'HKLM:\zSOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks'
+    if (Test-Path $taskCache) {
+        Get-ChildItem $taskCache | ForEach-Object {
+            $taskPath = (Get-ItemProperty -Path $_.PSPath -Name 'Path' -ErrorAction SilentlyContinue).Path
+            if ($taskPath -and $taskPath.StartsWith('\Windows Defender')) {
+                Remove-Item -Path $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Remove-RegistryKey 'HKLM\zSOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\Windows Defender'
+    }
+
+    # Hide the virus & protection Settings page (no Defender UI to configure)
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'SettingsPageVisibility' 'REG_SZ' 'hide:virus'
+
+    Write-Log "Windows Defender disabled in image"
+}
+
+function Remove-DefenderPackages {
+    # -Defender Remove only: uninstall the Defender platform and the Windows
+    # Security app from the offline image, then delete leftover files.
+    # Runs while registry hives are NOT loaded so DISM can rewrite hive files.
+    if ($Defender -ne 'Remove') { return }
+    Write-Log "Removing Windows Defender packages and files..."
+
+    # Defender platform FoD (contains MsMpEng, WdFilter, WdNisSvc)
+    try {
+        $allPackages = & dism /image:$scratchDir /Get-Packages /Format:Table
+        $allPackages = $allPackages -split "`n" | Select-Object -Skip 1
+        foreach ($package in $allPackages) {
+            if (-not $package) { continue }
+            $packageIdentity = ("$package" -split '\s+')[0]
+            if ($packageIdentity -like 'Windows-Defender-Client-Package~*') {
+                Write-Log "Removing package: $packageIdentity"
+                & dism /image:$scratchDir /Remove-Package /PackageName:$packageIdentity /Quiet /NoRestart 2>&1 | Out-Null
+            }
+        }
+    } catch {
+        Write-Log "Defender package removal issue: $_" "WARN"
+    }
+
+    # Windows Security app (SecHealthUI)
+    try {
+        $secHealth = @(Get-AppxProvisionedPackage -Path $scratchDir -ErrorAction SilentlyContinue |
+            Where-Object { $_.PackageName -like '*SecHealthUI*' })
+        foreach ($pkg in $secHealth) {
+            Write-Log "Removing provisioned package: $($pkg.PackageName)"
+            Remove-AppxProvisionedPackage -Path $scratchDir -PackageName $pkg.PackageName -ErrorAction SilentlyContinue | Out-Null
+        }
+    } catch {
+        Write-Log "SecHealthUI removal issue: $_" "WARN"
+    }
+
+    # Leftover files/folders - take ownership first, then delete
+    $adminSID = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+    $adminGroup = $adminSID.Translate([System.Security.Principal.NTAccount])
+    $targets = @(
+        "$scratchDir\Program Files\Windows Defender",
+        "$scratchDir\Program Files (x86)\Windows Defender",
+        "$scratchDir\ProgramData\Microsoft\Windows Defender",
+        "$scratchDir\Windows\System32\Tasks\Windows Defender",
+        "$scratchDir\Windows\System32\MsMpEng.exe",
+        "$scratchDir\Windows\System32\WdFilter.sys",
+        "$scratchDir\Windows\System32\WdNisDrv.sys",
+        "$scratchDir\Windows\System32\WdNisSvc.exe"
+    )
+    foreach ($target in $targets) {
+        if (-not (Test-Path -LiteralPath $target)) { continue }
+        Write-Log "Deleting: $target"
+        & takeown.exe /F $target /R /D Y 2>&1 | Out-Null
+        & icacls.exe $target /grant "$($adminGroup.Value):(F)" /T /C /Q 2>&1 | Out-Null
+        Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Log "Windows Defender removed from image"
+}
+
 function Apply-RegistryTweaks {
     Write-Log "Loading registry hives..."
     
@@ -631,7 +863,16 @@ function Apply-RegistryTweaks {
     reg load HKLM\zSYSTEM "$scratchDir\Windows\System32\config\SYSTEM" | Out-Null
     
     Write-Log "Applying registry tweaks..."
-    
+
+    # Disable UAC permanently - image policy, read at every boot/logon.
+    # Nothing on this image (no domain GPO/MDM) re-enables it; Windows Update
+    # preserves HKLM policy keys. Revert = set EnableLUA back to 1.
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'ConsentPromptBehaviorAdmin' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'ConsentPromptOnSecureDesktop' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'PromptOnSecureDesktop' 'REG_DWORD' '0'
+    Write-Log "UAC disabled (EnableLUA=0)"
+
     # Bypass system requirements
     Set-RegistryValue 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' 'SV1' 'REG_DWORD' '0'
     Set-RegistryValue 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' 'SV2' 'REG_DWORD' '0'
@@ -806,6 +1047,24 @@ function Remove-NonEssentialServices {
     Write-Log "Non-essential services disabled"
 }
 
+function Enable-UltimatePerformance {
+    # Always-on: expose Microsoft's hidden Ultimate Performance power scheme and
+    # activate it at first logon. Schemes can't be added to an offline image, so
+    # this runs once via RunOnce (UAC is disabled in this image => full token).
+    $powerScript = @'
+$ErrorActionPreference = 'SilentlyContinue'
+$out = powercfg /duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 | Out-String
+if ($out -match '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})') {
+    powercfg /setactive $Matches[1]
+}
+'@
+    $stageDir = "$scratchDir\Windows\Tiny11"
+    New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+    Set-Content -LiteralPath "$stageDir\ultimate-power.ps1" -Value $powerScript -Encoding UTF8
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' 'Tiny11UltimatePerf' 'REG_SZ' 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Windows\Tiny11\ultimate-power.ps1'
+    Write-Log "Ultimate Performance power plan will be activated at first logon"
+}
+
 function Apply-PerformanceTweaks {
     # Author: kelexine (https://github.com/kelexine)
     # Bakes performance optimizations into the offline image via registry.
@@ -886,13 +1145,16 @@ function Apply-PerformanceTweaks {
     Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Serialize' 'StartupDelayInMSec' 'REG_DWORD' '0'
     # Remove chkdsk countdown at boot — runs immediately if volume is flagged, skips otherwise
     Set-RegistryValue 'HKLM\zSYSTEM\ControlSet001\Control\Session Manager' 'AutoChkTimeOut' 'REG_DWORD' '0'
-    # Fast Startup (HiberBoot) ON — kernel hibernation gives faster cold boots on desktop
-    Set-RegistryValue 'HKLM\zSYSTEM\ControlSet001\Control\Session Manager\Power' 'HiberbootEnabled' 'REG_DWORD' '1'
+    # Fast Startup (HiberBoot) OFF - always: no hybrid boot, clean full shutdowns
+    Set-RegistryValue 'HKLM\zSYSTEM\ControlSet001\Control\Session Manager\Power' 'HiberbootEnabled' 'REG_DWORD' '0'
     # BCD tweaks — cannot modify BCD store offline; deferred to first boot via RunOnce
     Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' 'PerfTuneBCD' 'REG_SZ' `
         'powershell -WindowStyle Hidden -ExecutionPolicy Bypass -Command "& bcdedit /set timeout 10 2>&1 | Out-Null"'
 
     Write-Log "Performance optimizations applied (desktop/dev profile)"
+
+    # Always-on: Ultimate Performance power plan (activated at first logon)
+    Enable-UltimatePerformance
 }
 
 function Unload-RegistryHives {
@@ -1067,9 +1329,10 @@ function Invoke-Cleanup {
 try {
     Write-Log "=== Tiny11 Headless Builder Started ===" "INFO"
     Write-Log "Author: kelexine (https://github.com/kelexine)"
-    Write-Log "Parameters: ISO=$ISO, INDEX=$INDEX, SCRATCH=$ScratchDisk"
+    Write-Log "Parameters: ISO=$ISO, INDEX=$INDEX, SCRATCH=$ScratchDisk, DEFENDER=$Defender, APPS=$Apps"
     
     Initialize-IsoSource
+    Test-AppsSelection
     Test-Prerequisites
     Export-BackupDrivers
     
@@ -1095,7 +1358,10 @@ try {
     # Customization phase
     Remove-BloatwareApps
     Remove-EdgeAndOneDrive
+    Remove-DefenderPackages
     Apply-RegistryTweaks
+    Set-WindowsDefender
+    Stage-ThirdPartyApps
     Apply-PerformanceTweaks
     Remove-ScheduledTasks
     Remove-NonEssentialServices
