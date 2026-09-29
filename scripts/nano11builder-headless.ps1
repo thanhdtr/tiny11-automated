@@ -1151,15 +1151,23 @@ function Load-RegistryHives {
 function Unload-RegistryHives {
     Write-Log "Unloading registry hives..."
 
+    # Force garbage collection to release PowerShell registry handles
     [GC]::Collect()
     [GC]::WaitForPendingFinalizers()
     Start-Sleep -Seconds 3
 
-    reg unload HKLM\zCOMPONENTS 2>&1 | Out-Null
-    reg unload HKLM\zDEFAULT 2>&1 | Out-Null
-    reg unload HKLM\zNTUSER 2>&1 | Out-Null
-    reg unload HKLM\zSOFTWARE 2>&1 | Out-Null
-    reg unload HKLM\zSYSTEM 2>&1 | Out-Null
+    foreach ($hive in 'zCOMPONENTS','zDEFAULT','zNTUSER','zSOFTWARE','zSYSTEM') {
+        if (-not (Test-Path "HKLM:\$hive")) { continue }
+        $unloaded = $false
+        foreach ($attempt in 1..3) {
+            reg unload "HKLM\$hive" 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $unloaded = $true; break }
+            [GC]::Collect()
+            [GC]::WaitForPendingFinalizers()
+            Start-Sleep -Seconds 3
+        }
+        if (-not $unloaded) { throw "Failed to unload HKLM\$hive - registry handles still held by another process" }
+    }
 
     Write-Log "Registry hives unloaded"
 }
@@ -1252,7 +1260,7 @@ function Remove-DefenderPackages {
             Remove-AppxProvisionedPackage -Path $scratchDir -PackageName $pkg.PackageName -ErrorAction SilentlyContinue | Out-Null
         }
     } catch {
-        Write-Log "SecHealthUI removal issue: $_" "WARN"
+        Write-Log "SecHealthUI provisioned removal blocked (expected on Win11 - folder deletion follows): $_" "WARN"
     }
 
     # Leftover files/folders - take ownership first, then delete
@@ -1268,6 +1276,13 @@ function Remove-DefenderPackages {
         "$scratchDir\Windows\System32\WdNisDrv.sys",
         "$scratchDir\Windows\System32\WdNisSvc.exe"
     )
+
+    # Win11 22563+: SecHealthUI lives under WindowsApps and provisioned removal is
+    # policy-blocked (0x80073CFA "Removal failed") - force-delete its package folder.
+    foreach ($secDir in @(Get-ChildItem "$scratchDir\Program Files\WindowsApps\Microsoft.SecHealthUI*" -Directory -Force -ErrorAction SilentlyContinue)) {
+        $targets += $secDir.FullName
+    }
+    $targets += "$scratchDir\Windows\SystemApps\Microsoft.Windows.SecHealthUI_cw5n1h2txyewy"
     foreach ($target in $targets) {
         if (-not (Test-Path -LiteralPath $target)) { continue }
         Write-Log "Deleting: $target"
