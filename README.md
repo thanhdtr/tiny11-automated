@@ -138,7 +138,7 @@ irm https://raw.githubusercontent.com/thanhdtr/tiny11-automated/main/run.ps1 | i
 # 3. Set execution policy
 Set-ExecutionPolicy Bypass -Scope Process
 
-# 4. Choose your variant - -ISO accepts a file path (mounted automatically) or a drive letter:
+# 4. Choose your variant - -ISO accepts a file path or a folder containing one (mounted automatically), or a drive letter:
 
 # Standard Tiny11 (Recommended for daily use)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1
@@ -297,13 +297,14 @@ tiny11-automated/
 
 ```powershell
 .\tiny11maker-headless.ps1
-    -ISO <string>              # Drive letter of mounted ISO (e.g., "E") or path to a .iso file
+    -ISO <string>              # Drive letter of mounted ISO (e.g., "E"), a .iso file, or a folder containing one
     -INDEX <int>               # Image index (1=Home, 4=Education, 6=Pro, 7=Pro N)
     [-SCRATCH <string>]        # Optional: Scratch disk (default: script directory)
     [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
     [-Defender <string>]       # Optional: Keep (Standard default), Disable or Remove (Core/Nano default)
     [-Apps <string>]           # Optional: winutil app keys for first-logon install (e.g. "7zip,chrome") or "winutil"
     [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
+    [-Compress <string>]       # Optional: fast (default, quickest build) | max | recovery (slowest, smallest ISO)
     [-SkipCleanup]             # Optional: Keep temp files for debugging
 ```
 
@@ -319,13 +320,14 @@ tiny11-automated/
 
 ```powershell
 .\nano11builder-headless.ps1
-    -ISO <string>              # Drive letter of mounted ISO or path to a .iso file
+    -ISO <string>              # Drive letter of mounted ISO, a .iso file, or a folder containing one
     -INDEX <int>               # Image index
     [-SCRATCH <string>]        # Optional: Scratch disk
     [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
     [-Defender <string>]       # Optional: Keep, Disable or Remove (default: Remove)
     [-Apps <string>]           # Optional: winutil app keys for first-logon install (e.g. "7zip,chrome") or "winutil"
     [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
+    [-Compress <string>]       # Optional: fast (default, quickest build) | max | recovery (slowest, smallest ISO)
     [-SkipCleanup]             # Optional: Keep temp files
     [-PreserveWinRE]           # Keep winre.wim intact (required for real hardware / 24H2+ to avoid 0x8007000B)
 ```
@@ -353,6 +355,9 @@ tiny11-automated/
 
 # Save the finished ISO to a custom folder (default: next to the source .iso)
 .\scripts\tiny11maker-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 6 -OutputDir D:\Tiny11Out
+
+# Compression: fast (default, quickest build) or max / recovery (slower, smaller ISO)
+.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 6 -Compress recovery
 
 # Back up this PC's drivers into host_drivers\ and add them to the image -
 # they auto-install on the freshly installed Windows (no driver downloads)

@@ -10,8 +10,9 @@
 
     The bootstrap script will:
       * download this repository to %LOCALAPPDATA%\tiny11-automated\repo
-      * ask for the Windows 11 source (path to an .iso file, or the drive
-        letter of an ISO you already mounted - files are mounted for you)
+      * ask for the Windows 11 source (a .iso file, a folder containing one,
+        or the drive letter of an ISO you already mounted - files are
+        mounted for you)
       * ask how to handle Windows Defender (Keep / Disable / Remove)
       * show a full app picker that preinstalls software at first logon (winutil)
       * run the selected headless builder (Standard / Core / Nano)
@@ -26,8 +27,8 @@
     Build variant: Standard, Core or Nano. Prompted when omitted.
 
 .PARAMETER ISO
-    Windows 11 source: path to an .iso file, or a single drive letter of an
-    already mounted ISO. Prompted when omitted.
+    Windows 11 source: path to an .iso file, a folder containing one, or a
+    single drive letter of an already mounted ISO. Prompted when omitted.
 
 .PARAMETER Index
     Windows image index (1=Home, 4=Education, 6=Pro, 7=Pro N). Prompted when omitted.
@@ -57,6 +58,10 @@
     Comma-separated winutil app keys to install silently on first logon
     (e.g. '7zip,chrome,vlc'). Interactive runs show a full catalog menu
     (Space = select, Enter = confirm, Esc = skip) when omitted.
+
+.PARAMETER Compress
+    Compression for the install image export: fast (default - quickest build,
+    slightly larger ISO) or max / recovery (slower - smaller ISO).
 
 .PARAMETER SkipCleanup
     Keep temporary build files for debugging.
@@ -97,6 +102,9 @@ param(
 
     [string]$Apps,
 
+    [ValidateSet('fast', 'max', 'recovery')]
+    [string]$Compress,
+
     [switch]$SkipCleanup,
 
     [switch]$NonInteractive
@@ -123,6 +131,7 @@ if ($env:TINY11_DOTNET35 -eq '1') { $EnableDotnet35 = $true }
 if ($env:TINY11_BACKUPDRIVERS -eq '1') { $BackupDrivers = $true }
 if (-not $Defender -and $env:TINY11_DEFENDER) { $Defender = $env:TINY11_DEFENDER }
 if (-not $Apps -and $env:TINY11_APPS) { $Apps = $env:TINY11_APPS }
+if (-not $Compress -and $env:TINY11_COMPRESS) { $Compress = $env:TINY11_COMPRESS }
 if ($env:TINY11_SKIPCLEANUP -eq '1') { $SkipCleanup = $true }
 if ($env:TINY11_NONINTERACTIVE -eq '1') { $NonInteractive = $true }
 
@@ -264,6 +273,7 @@ if (-not $isAdmin) {
         if ($BackupDrivers) { Set-ChildEnv 'TINY11_BACKUPDRIVERS' '1' }
         if ($Defender) { Set-ChildEnv 'TINY11_DEFENDER' $Defender }
         if ($Apps) { Set-ChildEnv 'TINY11_APPS' $Apps }
+        if ($Compress) { Set-ChildEnv 'TINY11_COMPRESS' $Compress }
         if ($SkipCleanup) { Set-ChildEnv 'TINY11_SKIPCLEANUP' '1' }
         if ($NonInteractive) { Set-ChildEnv 'TINY11_NONINTERACTIVE' '1' }
 
@@ -274,7 +284,7 @@ if (-not $isAdmin) {
         Write-Host 'Elevation was cancelled.' -ForegroundColor Red
         Write-Host "Re-run this in a PowerShell window opened as Administrator, or save run.ps1 and execute it there." -ForegroundColor Yellow
     } finally {
-        foreach ($name in @('TINY11_VARIANT', 'TINY11_ISO', 'TINY11_INDEX', 'TINY11_SCRATCH', 'TINY11_PRESERVEWINRE', 'TINY11_DOTNET35', 'TINY11_BACKUPDRIVERS', 'TINY11_DEFENDER', 'TINY11_APPS', 'TINY11_SKIPCLEANUP', 'TINY11_NONINTERACTIVE')) {
+        foreach ($name in @('TINY11_VARIANT', 'TINY11_ISO', 'TINY11_INDEX', 'TINY11_SCRATCH', 'TINY11_PRESERVEWINRE', 'TINY11_DOTNET35', 'TINY11_BACKUPDRIVERS', 'TINY11_DEFENDER', 'TINY11_APPS', 'TINY11_COMPRESS', 'TINY11_SKIPCLEANUP', 'TINY11_NONINTERACTIVE')) {
             Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
         }
     }
@@ -332,15 +342,45 @@ if (-not $Variant) {
 }
 
 while (-not $ISO) {
-    if ($NonInteractive) { throw 'Missing -ISO (path to a Windows 11 .iso file, or drive letter of a mounted ISO).' }
-    $candidate = (Read-Host 'Windows 11 source: path to .iso file, or drive letter of an already mounted ISO').Trim().Trim('"')
+    if ($NonInteractive) { throw 'Missing -ISO (a Windows 11 .iso file, a folder containing one, or drive letter of a mounted ISO).' }
+    $candidate = (Read-Host 'Windows 11 source: .iso file, a folder containing one, or drive letter of a mounted ISO').Trim().Trim('"')
     if (-not $candidate) { continue }
     if ($candidate -match '^[a-zA-Z]$') {
         if (Test-Path -LiteralPath ($candidate.Substring(0, 1) + ':\')) { $ISO = $candidate; break }
         Write-Host "Drive ${candidate}: does not exist." -ForegroundColor Yellow
         continue
     }
-    if (Test-Path -LiteralPath $candidate) { $ISO = $candidate; break }
+    if (Test-Path -LiteralPath $candidate -PathType Container) {
+        $isos = @(Get-ChildItem -LiteralPath $candidate -File -Filter '*.iso' -ErrorAction SilentlyContinue)
+        if ($isos.Count -eq 0) {
+            Write-Host "No .iso files found in: $candidate" -ForegroundColor Yellow
+            continue
+        }
+        if ($isos.Count -eq 1) {
+            $ISO = $isos[0].FullName
+            Write-Host "Using ISO: $ISO" -ForegroundColor Cyan
+            break
+        }
+        while ($true) {
+            Write-Host "Multiple .iso files found in ${candidate}:" -ForegroundColor Cyan
+            for ($i = 0; $i -lt $isos.Count; $i++) { Write-Host ('  {0}) {1}' -f ($i + 1), $isos[$i].Name) }
+            $n = 0
+            if ([int]::TryParse((Read-Default 'Choice' '1'), [ref]$n) -and $n -ge 1 -and $n -le $isos.Count) {
+                $ISO = $isos[$n - 1].FullName
+                break
+            }
+            Write-Host 'Please enter a number from the list.' -ForegroundColor Yellow
+        }
+        break
+    }
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        if ($candidate -notmatch '\.iso$') {
+            Write-Host "'$candidate' is not a .iso file - enter an .iso file, a folder containing one, or a drive letter." -ForegroundColor Yellow
+            continue
+        }
+        $ISO = $candidate
+        break
+    }
     Write-Host "File not found: $candidate" -ForegroundColor Yellow
 }
 $ISO = $ISO.Trim().Trim('"')
@@ -428,7 +468,14 @@ $isoFile     = $null
 if ($ISO -match '^[a-zA-Z]$') {
     $isoDrive = $ISO.ToUpper()
 } else {
-    if (-not (Test-Path -LiteralPath $ISO)) { throw "ISO file not found: $ISO" }
+    # folder source: use the .iso inside it (single-file rule for scripted runs)
+    if (Test-Path -LiteralPath $ISO -PathType Container) {
+        $isos = @(Get-ChildItem -LiteralPath $ISO -File -Filter '*.iso' -ErrorAction SilentlyContinue)
+        if ($isos.Count -ne 1) { throw "Folder '$ISO' must contain exactly one .iso file (found $($isos.Count)). Enter the file path directly." }
+        $ISO = $isos[0].FullName
+        Write-Host "Using ISO: $ISO" -ForegroundColor Cyan
+    }
+    if (-not (Test-Path -LiteralPath $ISO -PathType Leaf)) { throw "ISO file not found: $ISO (enter an .iso file, a folder containing one, or a mounted drive letter)" }
     $isoFile = (Resolve-Path -LiteralPath $ISO).Path
 
     $image = Get-DiskImage -ImagePath $isoFile -ErrorAction SilentlyContinue
@@ -501,6 +548,7 @@ if ($Variant -ne 'Standard') { Write-Host "  WinRE   : $winreLabel" }
 if ($BackupDrivers) { Write-Host '  Drivers : exported from this PC + injected' }
 Write-Host "  Defender : $Defender"
 Write-Host "  Apps     : $(if ($Apps) { $Apps } else { 'none' })"
+Write-Host "  Compress : $(if ($Compress) { $Compress } else { 'fast (default)' })"
 Write-Host "  Output  : $chosenOutputDir"
 Write-Host ''
 if (-not $NonInteractive) {
@@ -532,6 +580,7 @@ if ($EnableDotnet35 -and $Variant -eq 'Core') { $builderParams.ENABLE_DOTNET35 =
 if ($BackupDrivers) { $builderParams.BackupDrivers = $true }
 if ($Defender) { $builderParams.Defender = $Defender }
 if ($Apps) { $builderParams.Apps = $Apps }
+if ($Compress) { $builderParams.Compress = $Compress }
 
 Write-Host ''
 Write-Host "Starting $Variant build - this takes 30-80 minutes, do not close the window..." -ForegroundColor Green

@@ -36,6 +36,11 @@
     Custom folder for the finished ISO. Defaults to the folder of the source
     .iso file (file-path -ISO), or the script folder (drive-letter -ISO).
 
+.PARAMETER Compress
+    Compression for the install.wim exports: fast (default - quickest build,
+    slightly larger ISO), max or recovery (slowest - smallest ISO). Core and
+    Nano still recompress to a solid ESD at the end for minimum size.
+
 .PARAMETER SkipCleanup
     Skip cleanup of temporary files after ISO creation (optional, for debugging)
 
@@ -87,7 +92,11 @@ param (
     [string]$Apps = '',
 
     [Parameter(Mandatory=$false, HelpMessage="Custom folder for the finished ISO (default: next to the source .iso file, or the script folder for a drive letter)")]
-    [string]$OutputDir = ''
+    [string]$OutputDir = '',
+
+    [Parameter(Mandatory=$false, HelpMessage="Compression for the install.wim exports: fast (default, quickest, slightly larger ISO), max or recovery (slowest, smallest)")]
+    [ValidateSet('fast', 'max', 'recovery')]
+    [string]$Compress = 'fast'
 )
 
 #---------[ Error Handling ]---------#
@@ -482,9 +491,10 @@ function Convert-ESDToWIM {
         throw "Image index $INDEX not found in install.esd"
     }
 
-    Write-Log "Exporting image index $INDEX from ESD (this may take 10-20 minutes)..."
+    $esdComp = if ($Compress -eq 'fast') { 'Fast' } else { 'Maximum' }
+    Write-Log "Exporting image index $INDEX from ESD ($Compress compression)..."
     Export-WindowsImage -SourceImagePath $esdPath -SourceIndex $INDEX `
-        -DestinationImagePath $tempWimPath -CompressionType Maximum -CheckIntegrity
+        -DestinationImagePath $tempWimPath -CompressionType $esdComp -CheckIntegrity
 
     Write-Log "ESD conversion complete"
 }
@@ -1659,9 +1669,9 @@ function Dismount-AndExport {
     Write-Log "Dismounting install.wim..."
     & dism /English /unmount-image "/mountdir:$scratchDir" /commit
 
-    Write-Log "Exporting image with maximum compression..."
+    Write-Log "Exporting image ($Compress compression)..."
     $tempWim = "$nano11Dir\sources\install2.wim"
-    & Dism.exe /English /Export-Image /SourceImageFile:$wimFilePath /SourceIndex:$INDEX /DestinationImageFile:$tempWim /Compress:max
+    & Dism.exe /English /Export-Image /SourceImageFile:$wimFilePath /SourceIndex:$INDEX /DestinationImageFile:$tempWim /Compress:$Compress
 
     Remove-Item -Path $wimFilePath -Force
     Rename-Item -Path $tempWim -NewName "install.wim"
