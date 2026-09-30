@@ -15,42 +15,6 @@
 
 ---
 
-## 📋 Overview
-
-Tiny11 Automated Builder provides **production-ready PowerShell scripts** to create minimized Windows 11 ISO images by:
-
-✨ **Removing bloatware** (40+ unnecessary apps)  
-🔒 **Disabling telemetry** (complete privacy protection)  
-⚡ **Optimizing performance** (faster boot, less resource usage)  
-🤖 **Full CI/CD automation** (GitHub Actions workflows)  
-🛠️ **System requirement bypass** (TPM, CPU, RAM checks removed)
-
-**Three variants** available: **Standard** (daily use), **Core** (ultra-minimal), **Nano** (VM testing)
-
-### 🙏 Attribution
-
-This project is based on the original [tiny11 builder by ntdevlabs](https://github.com/ntdevlabs/tiny11builder). The headless versions were created by **kelexine** to enable automated CI/CD builds while preserving all original functionality.
-
-### 📥 Downloads
-
-This fork does not publish anywhere else. Builds stay in **your own repository**:
-
-- **ISO files**: workflow **Artifacts** (kept for 7 days) and **GitHub Releases**
-- **Checksums**: `.sha256` / `.md5` / `.txt` files attached to each run
-- **Source Code**: your GitHub repository
-
-### 🌐 Landing Pages
-
-- **Tiny11 Info**: [https://kelexine.is-a.dev/tiny11](https://kelexine.is-a.dev/tiny11) - Detailed information about standard Tiny11 builds
-- **Nano11 Info**: [https://kelexine.is-a.dev/nano11](https://kelexine.is-a.dev/nano11) - Detailed information about Nano11 extreme minimal builds
-
-
-### ⚖️ Legal Notice
-
-> **IMPORTANT**: These scripts are for educational and testing purposes only. You **must** have a valid Windows license. Using modified Windows images may violate Microsoft's terms of service. See [LICENSE](LICENSE) and [SECURITY.md](SECURITY.md) for details.
-
----
-
 ## 🔒 Privacy & Data Handling
 
 This fork sends **nothing** to third parties:
