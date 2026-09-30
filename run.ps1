@@ -60,8 +60,8 @@
     (Space = select, Enter = confirm, Esc = skip) when omitted.
 
 .PARAMETER Compress
-    Compression for the install image export: fast (default - quickest build,
-    slightly larger ISO) or max / recovery (slower - smaller ISO).
+    Compression for the install image export: max (default), fast or recovery
+    (smallest - slow single-threaded DISM). fast/max use multi-threaded wimlib.
 
 .PARAMETER SkipCleanup
     Keep temporary build files for debugging.
@@ -204,36 +204,47 @@ function Select-ThirdPartyApps {
 
         $done = $false
         $cancel = $false
+        $dirty = $true
         while (-not $done) {
             $cursorItem = $selectable[$cursor]
             if ($cursorItem -lt $scrollTop) { $scrollTop = $cursorItem }
             if ($cursorItem -gt $scrollTop + $viewH - 1) { $scrollTop = $cursorItem - $viewH + 1 }
             $lastItem = [Math]::Min($items.Count - 1, $scrollTop + $viewH - 1)
 
-            [Console]::SetCursorPosition(0, 0)
-            Write-Host ('=' * $maxW) -ForegroundColor DarkGray
-            Write-Host ' Select apps to install silently at first logon - Space=toggle, Enter=confirm, Esc=skip' -ForegroundColor Cyan
-            Write-Host " Selected: $($selected.Count) of $($selectable.Count)  |  arrows/PgUp/PgDn/Home/End to move" -ForegroundColor Yellow
-            for ($i = $scrollTop; $i -le $lastItem; $i++) {
-                $it = $items[$i]
-                if ($it.Type -eq 'header') {
-                    $hdr = "  [$($it.Text)]"
-                    if ($hdr.Length -gt $maxW) { $hdr = $hdr.Substring(0, $maxW) }
-                    Write-Host $hdr -ForegroundColor DarkCyan
-                } else {
-                    $mark = if ($selected -contains $it.Key) { '[*]' } else { '[ ]' }
-                    $prefix = if ($i -eq $cursorItem) { '> ' } else { '  ' }
-                    $color = if ($i -eq $cursorItem) { 'White' } elseif ($selected -contains $it.Key) { 'Green' } else { 'Gray' }
-                    $line = "$prefix$mark $($it.Label)"
-                    if ($line.Length -gt $maxW) { $line = $line.Substring(0, $maxW - 1) + [char]0x2026 }
-                    Write-Host $line -ForegroundColor $color
+            if ($dirty) {
+                $dirty = $false
+                [Console]::SetCursorPosition(0, 0)
+                Write-Host ('=' * $maxW) -ForegroundColor Gray
+                Write-Host ' Select apps to install silently at first logon - Space=toggle, Enter=confirm, Esc=skip' -ForegroundColor Cyan
+                Write-Host " Selected: $($selected.Count) of $($selectable.Count)  |  arrows/PgUp/PgDn/Home/End to move" -ForegroundColor Yellow
+                for ($i = $scrollTop; $i -le $lastItem; $i++) {
+                    $it = $items[$i]
+                    if ($it.Type -eq 'header') {
+                        $hdr = "  [$($it.Text)]"
+                        if ($hdr.Length -gt $maxW) { $hdr = $hdr.Substring(0, $maxW) }
+                        Write-Host $hdr -ForegroundColor Cyan
+                    } else {
+                        $mark = if ($selected -contains $it.Key) { '[*]' } else { '[ ]' }
+                        $isCursor = ($i -eq $cursorItem)
+                        $prefix = if ($isCursor) { '> ' } else { '  ' }
+                        $line = "$prefix$mark $($it.Label)"
+                        if ($line.Length -gt $maxW) { $line = $line.Substring(0, $maxW - 3) + '...' }
+                        if ($isCursor) {
+                            Write-Host $line.PadRight($maxW) -ForegroundColor Black -BackgroundColor Gray
+                        } elseif ($selected -contains $it.Key) {
+                            Write-Host $line -ForegroundColor Green
+                        } else {
+                            Write-Host $line -ForegroundColor Gray
+                        }
+                    }
+                }
+                for ($i = 3 + ($lastItem - $scrollTop + 1); $i -lt [Console]::WindowHeight; $i++) {
+                    [Console]::SetCursorPosition(0, $i)
+                    Write-Host (' ' * $maxW)
                 }
             }
-            for ($i = 3 + ($lastItem - $scrollTop + 1); $i -lt [Console]::WindowHeight; $i++) {
-                [Console]::SetCursorPosition(0, $i)
-                Write-Host (' ' * $maxW)
-            }
 
+            $state = "$cursor|$($selected -join ',')"
             $key = [Console]::ReadKey($true)
             switch ($key.Key) {
                 'DownArrow' { if ($cursor -lt $selectable.Count - 1) { $cursor++ } }
@@ -249,6 +260,7 @@ function Select-ThirdPartyApps {
                 'Enter'  { $done = $true }
                 'Escape' { $done = $true; $cancel = $true }
             }
+            if ("$cursor|$($selected -join ',')" -ne $state) { $dirty = $true }
         }
         [Console]::Clear()
         if ($cancel) { return '' }
@@ -548,7 +560,7 @@ if ($Variant -ne 'Standard') { Write-Host "  WinRE   : $winreLabel" }
 if ($BackupDrivers) { Write-Host '  Drivers : exported from this PC + injected' }
 Write-Host "  Defender : $Defender"
 Write-Host "  Apps     : $(if ($Apps) { $Apps } else { 'none' })"
-Write-Host "  Compress : $(if ($Compress) { $Compress } else { 'fast (default)' })"
+Write-Host "  Compress : $(if ($Compress) { $Compress } else { 'max (default)' })"
 Write-Host "  Output  : $chosenOutputDir"
 Write-Host ''
 if (-not $NonInteractive) {

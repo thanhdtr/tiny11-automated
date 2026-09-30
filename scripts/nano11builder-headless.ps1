@@ -37,9 +37,11 @@
     .iso file (file-path -ISO), or the script folder (drive-letter -ISO).
 
 .PARAMETER Compress
-    Compression for the install.wim exports: fast (default - quickest build,
-    slightly larger ISO), max or recovery (slowest - smallest ISO). Core and
-    Nano still recompress to a solid ESD at the end for minimum size.
+    Compression for the install.wim export: max (default), fast or recovery
+    (smallest - single-threaded DISM, slowest). fast/max are exported with
+    wimlib (multi-threaded, downloaded and SHA256-verified at build time);
+    any wimlib failure falls back to DISM automatically. Core and Nano still
+    recompress to a solid ESD at the end for minimum size.
 
 .PARAMETER SkipCleanup
     Skip cleanup of temporary files after ISO creation (optional, for debugging)
@@ -94,9 +96,9 @@ param (
     [Parameter(Mandatory=$false, HelpMessage="Custom folder for the finished ISO (default: next to the source .iso file, or the script folder for a drive letter)")]
     [string]$OutputDir = '',
 
-    [Parameter(Mandatory=$false, HelpMessage="Compression for the install.wim exports: fast (default, quickest, slightly larger ISO), max or recovery (slowest, smallest)")]
+    [Parameter(Mandatory=$false, HelpMessage="Compression for the install.wim export: max (default), fast or recovery (smallest - single-threaded DISM, slow)")]
     [ValidateSet('fast', 'max', 'recovery')]
-    [string]$Compress = 'fast'
+    [string]$Compress = 'max'
 )
 
 #---------[ Error Handling ]---------#
@@ -1665,13 +1667,57 @@ function Optimize-WindowsImage {
     Write-Log "Image cleanup complete"
 }
 
+function Get-WimlibExe {
+    # Multi-threaded WIM writer used for fast/max exports. Downloads the small
+    # portable zip (SHA256-pinned) like oscdimg, returns $null on any failure
+    # so callers fall back to DISM.
+    $dest = "$PSScriptRoot\wimlib"
+    $exe  = "$dest\wimlib-imagex.exe"
+    if (Test-Path -LiteralPath $exe) { return $exe }
+    try {
+        $url = 'https://wimlib.net/downloads/wimlib-1.14.5-windows-x86_64-bin.zip'
+        $sha = '2f446d6fa3866582175f1a22a7be198eeee0aec7aba5b4e04ad25c99eae2d265'
+        $zip = Join-Path $env:TEMP 'wimlib.zip'
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 180
+        if ((Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower() -ne $sha) {
+            throw 'wimlib download failed SHA256 verification'
+        }
+        if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+        Expand-Archive -Path $zip -DestinationPath $dest -Force
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path -LiteralPath $exe)) { throw 'wimlib-imagex.exe missing after extraction' }
+        return $exe
+    } catch {
+        Write-Log "wimlib unavailable ($($_.Exception.Message)) - falling back to DISM (single-threaded)" "WARN"
+        return $null
+    }
+}
+
 function Dismount-AndExport {
     Write-Log "Dismounting install.wim..."
     & dism /English /unmount-image "/mountdir:$scratchDir" /commit
 
-    Write-Log "Exporting image ($Compress compression)..."
     $tempWim = "$nano11Dir\sources\install2.wim"
-    & Dism.exe /English /Export-Image /SourceImageFile:$wimFilePath /SourceIndex:$INDEX /DestinationImageFile:$tempWim /Compress:$Compress
+    $exported = $false
+    if ($Compress -ne 'recovery') {
+        $wimlib = Get-WimlibExe
+        if ($wimlib) {
+            $threads = [Environment]::ProcessorCount
+            Write-Log "Exporting image ($Compress compression, wimlib x$threads threads)..."
+            & $wimlib export $wimFilePath $INDEX $tempWim "--compress=$Compress" "--threads=$threads" | Out-Null
+            if (($LASTEXITCODE -eq 0) -and (Test-Path -LiteralPath $tempWim)) {
+                $exported = $true
+            } else {
+                Write-Log "wimlib export failed (exit code $LASTEXITCODE) - falling back to DISM" "WARN"
+                Remove-Item -LiteralPath $tempWim -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    if (-not $exported) {
+        Write-Log "Exporting image ($Compress compression, DISM)..."
+        & Dism.exe /English /Export-Image /SourceImageFile:$wimFilePath /SourceIndex:$INDEX /DestinationImageFile:$tempWim /Compress:$Compress
+        if (-not (Test-Path -LiteralPath $tempWim)) { throw "Export failed: no image produced at $tempWim" }
+    }
 
     Remove-Item -Path $wimFilePath -Force
     Rename-Item -Path $tempWim -NewName "install.wim"
@@ -1880,6 +1926,7 @@ function Invoke-Cleanup {
     Remove-Item -Path $nano11Dir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $scratchDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path "$PSScriptRoot\oscdimg.exe" -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path "$PSScriptRoot\wimlib" -Recurse -Force -ErrorAction SilentlyContinue
 
     Write-Log "Cleanup complete"
 }

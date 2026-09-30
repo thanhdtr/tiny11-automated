@@ -304,7 +304,7 @@ tiny11-automated/
     [-Defender <string>]       # Optional: Keep (Standard default), Disable or Remove (Core/Nano default)
     [-Apps <string>]           # Optional: winutil app keys for first-logon install (e.g. "7zip,chrome") or "winutil"
     [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
-    [-Compress <string>]       # Optional: fast (default, quickest build) | max | recovery (slowest, smallest ISO)
+    [-Compress <string>]       # Optional: max (default, fast multi-threaded) | fast | recovery (smallest - slow single-threaded)
     [-SkipCleanup]             # Optional: Keep temp files for debugging
 ```
 
@@ -327,7 +327,7 @@ tiny11-automated/
     [-Defender <string>]       # Optional: Keep, Disable or Remove (default: Remove)
     [-Apps <string>]           # Optional: winutil app keys for first-logon install (e.g. "7zip,chrome") or "winutil"
     [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
-    [-Compress <string>]       # Optional: fast (default, quickest build) | max | recovery (slowest, smallest ISO)
+    [-Compress <string>]       # Optional: max (default, fast multi-threaded) | fast | recovery (smallest - slow single-threaded)
     [-SkipCleanup]             # Optional: Keep temp files
     [-PreserveWinRE]           # Keep winre.wim intact (required for real hardware / 24H2+ to avoid 0x8007000B)
 ```
@@ -356,7 +356,7 @@ tiny11-automated/
 # Save the finished ISO to a custom folder (default: next to the source .iso)
 .\scripts\tiny11maker-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 6 -OutputDir D:\Tiny11Out
 
-# Compression: fast (default, quickest build) or max / recovery (slower, smaller ISO)
+# Compression: max (default, fast multi-threaded via wimlib) or recovery (smallest, slow single-threaded DISM)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 6 -Compress recovery
 
 # Back up this PC's drivers into host_drivers\ and add them to the image -
