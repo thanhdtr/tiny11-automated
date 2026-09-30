@@ -82,7 +82,6 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Standard', 'Core', 'Nano')]
     [string]$Variant,
 
     [string]$ISO,
@@ -97,12 +96,10 @@ param(
 
     [switch]$BackupDrivers,
 
-    [ValidateSet('Keep', 'Disable', 'Remove')]
     [string]$Defender,
 
     [string]$Apps,
 
-    [ValidateSet('fast', 'max', 'recovery')]
     [string]$Compress,
 
     [switch]$SkipCleanup,
@@ -134,6 +131,12 @@ if (-not $Apps -and $env:TINY11_APPS) { $Apps = $env:TINY11_APPS }
 if (-not $Compress -and $env:TINY11_COMPRESS) { $Compress = $env:TINY11_COMPRESS }
 if ($env:TINY11_SKIPCLEANUP -eq '1') { $SkipCleanup = $true }
 if ($env:TINY11_NONINTERACTIVE -eq '1') { $NonInteractive = $true }
+
+# ValidateSet attributes are unusable here: PS 5.1 cannot bind them when the
+# script is started with 'irm ... | iex', so the choices are checked manually.
+if ($Variant -and $Variant -notin @('Standard', 'Core', 'Nano')) { throw "Invalid -Variant '$Variant' - use Standard, Core or Nano." }
+if ($Defender -and $Defender -notin @('Keep', 'Disable', 'Remove')) { throw "Invalid -Defender '$Defender' - use Keep, Disable or Remove." }
+if ($Compress -and $Compress -notin @('fast', 'max', 'recovery')) { throw "Invalid -Compress '$Compress' - use fast, max or recovery." }
 
 function Read-Default {
     param([string]$Prompt, [string]$Default = '')
