@@ -1,36 +1,5 @@
 # Tiny11 Automated Builder
 
-[![Build Tiny11](https://github.com/kelexine/tiny11-automated/actions/workflows/build-tiny11.yml/badge.svg)](https://github.com/kelexine/tiny11-automated/actions/workflows/build-tiny11.yml)
-[![Build Tiny11 Core](https://github.com/kelexine/tiny11-automated/actions/workflows/build-tiny11-core.yml/badge.svg)](https://github.com/kelexine/tiny11-automated/actions/workflows/build-tiny11-core.yml)
-[![Build Nano11](https://github.com/kelexine/tiny11-automated/actions/workflows/build-nano11.yml/badge.svg)](https://github.com/kelexine/tiny11-automated/actions/workflows/build-nano11.yml)
-
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
-[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-red?logo=GitHub-Sponsors)](https://github.com/sponsors/kelexine)
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/kelexine)
-
-
-[![Code of Conduct](https://img.shields.io/badge/code%20of%20conduct-contributor%20covenant-purple.svg)](CODE_OF_CONDUCT.md)
-
-**Automated tools for creating streamlined Windows 11 images with CI/CD support.**
-
-<div align="center">
-
-[🚀 Quick Start](#-quick-start) • [📥 Download](#-downloads) • [📖 Documentation](#-documentation) • [🤝 Contributing](#-contributing) • [💬 Community](#-community)
-
-</div>
-
----
-
-## 📊 Project Stats
-
-- **📦 Total Downloads**: 205391 (and growing!)
-- **🌍 Active Users**: 205391 worldwide
-- **✅ Build Success Rate**: 100%
-- **⏱️ Average Build Time**: ~30-50 minutes
-- **💾 ISO Size Reduction**: Up to 50% smaller (Windows 11 25H2)
-
-## 🆕 What's New (January 2026)
 
 **Windows 11 25H2 Optimizations:**
 - ✨ **AI/Recall Removal**: Complete removal of Copilot, Recall, and AI Fabric (~220 MB saved)
