@@ -253,7 +253,11 @@ function Export-BackupDrivers {
 
     New-Item -ItemType Directory -Force -Path $driverBackupDir | Out-Null
     Write-Log "Exporting third-party drivers from this PC to $driverBackupDir..."
-    $output = & dism /English /online /export-driver "/destination:$driverBackupDir" 2>&1
+    # No 2>&1 - see Set-RegistryValue for the full rationale: PS 5.1 turns any
+    # redirected native stderr into a terminating NativeCommandError under
+    # $ErrorActionPreference='Stop', which would abort even on a mere warning
+    # while DISM's exit code is 0. $LASTEXITCODE below is the real verdict.
+    $output = & dism /English /online /export-driver "/destination:$driverBackupDir"
     if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
         $output | ForEach-Object { Write-Log "$_" "ERROR" }
         throw "Driver export failed (DISM exit code $LASTEXITCODE)"
@@ -280,7 +284,10 @@ function Add-BackupDrivers {
     }
 
     Write-Log "Injecting $script:DriverCount driver packages into $TargetName..."
-    $output = & dism /English /image:"$TargetPath" /add-driver "/driver:$driverBackupDir" /recurse 2>&1
+    # No 2>&1 (rationale in Set-RegistryValue) - note this branch deliberately
+    # only WARNs and continues, so a redirected stderr line would have turned a
+    # survivable driver-injection problem into a fatal one.
+    $output = & dism /English /image:"$TargetPath" /add-driver "/driver:$driverBackupDir" /recurse
     if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
         $output | ForEach-Object { Write-Log "$_" "WARN" }
         Write-Log "Driver injection into $TargetName reported errors (exit code $LASTEXITCODE) - continuing." "WARN"
@@ -299,11 +306,34 @@ function Set-RegistryValue {
         [string]$value
     )
     try {
+        # Windows PowerShell 5.1 builds a native command line by wrapping an
+        # argument in double quotes WITHOUT escaping quotes inside it, so a REG_SZ
+        # payload containing quotes (the three first-logon PerfTune* scripts, the
+        # Start-menu pin policy, the desktop context-menu command) reached reg.exe
+        # as a malformed command line: three writes were rejected with
+        # "ERROR: Invalid syntax." and two more "succeeded" with the quotes
+        # silently stripped, turning valid JSON and a quoted URL into junk.
+        # Escaping them makes reg.exe's CRT parser hand back the payload intact.
+        $data = $value -replace '"', '\"'
+
+        # Deliberately no stderr redirection. This script runs with
+        # $ErrorActionPreference='Stop', and Windows PowerShell 5.1 turns a native
+        # command's redirected stderr (2>&1 and even 2>$null) into a terminating
+        # NativeCommandError - so any reg.exe complaint would abort the build
+        # instead of being handled. Leaving stderr on the console is safe; the exit
+        # code below is what decides success. Every reg.exe call in this file
+        # follows that rule.
         if ($name) {
-            & 'reg' 'add' $path '/v' $name '/t' $type '/d' $value '/f' | Out-Null
+            & 'reg' 'add' $path '/v' $name '/t' $type '/d' $data '/f' | Out-Null
         } else {
-            & 'reg' 'add' $path '/ve' '/t' $type '/d' $value '/f' | Out-Null
+            & 'reg' 'add' $path '/ve' '/t' $type '/d' $data '/f' | Out-Null
         }
+
+        # reg.exe reports failure on stderr and never throws, so without this check
+        # the catch below was unreachable and failed writes were logged as
+        # successes. This is what turned the silent corruption visible.
+        if ($LASTEXITCODE -ne 0) { throw "reg.exe exited with code $LASTEXITCODE" }
+
         Write-Log "Set registry: $path\$name = $value"
     } catch {
         Write-Log "Error setting registry $path\$name : $_" "ERROR"
@@ -314,7 +344,11 @@ function Set-RegistryValue {
 function Remove-RegistryKey {
     param([string]$path)
     try {
-        & 'reg' 'delete' $path '/f' 2>&1 | Out-Null
+        # No stderr redirection (rationale in Set-RegistryValue): it would make
+        # reg.exe's perfectly expected "key not found" a terminating error, and
+        # that throw was the only reason this catch ever fired. Read the exit code.
+        & 'reg' 'delete' $path '/f' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "reg.exe exited with code $LASTEXITCODE" }
         Write-Log "Removed registry key: $path"
     } catch {
         Write-Log "Registry key not found or error: $path" "WARN"
@@ -334,7 +368,9 @@ function Remove-RegistryValue {
     $keyPath = $path.Substring(0, $lastSlash)
     $valueName = $path.Substring($lastSlash + 1)
     try {
-        & 'reg' 'delete' $keyPath '/v' $valueName '/f' 2>&1 | Out-Null
+        # No stderr redirection (rationale in Set-RegistryValue) - see Remove-RegistryKey.
+        & 'reg' 'delete' $keyPath '/v' $valueName '/f' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "reg.exe exited with code $LASTEXITCODE" }
         Write-Log "Removed registry value: $path"
     } catch {
         Write-Log "Registry value not found or error: $path" "WARN"
@@ -543,8 +579,11 @@ function Take-OwnershipOfFolders {
     foreach ($folder in $foldersToOwn) {
         if (Test-Path $folder) {
             Write-Log "Taking ownership: $folder"
-            & takeown.exe /F $folder /R /D Y 2>&1 | Out-Null
-            & icacls.exe $folder /grant "$($adminGroup.Value):(F)" /T /C 2>&1 | Out-Null
+            # No 2>&1 on any takeown/icacls in this file - see Set-RegistryValue:
+            # under $ErrorActionPreference='Stop', PS 5.1 makes a single redirected
+            # native stderr line fatal even when the tool exited 0.
+            & takeown.exe /F $folder /R /D Y | Out-Null
+            & icacls.exe $folder /grant "$($adminGroup.Value):(F)" /T /C | Out-Null
         }
     }
     
@@ -552,8 +591,8 @@ function Take-OwnershipOfFolders {
         if (Test-Path $file) {
             Write-Log "Taking ownership: $file"
             # Remove /D Y as it requires /R and is not needed for single files
-            & takeown.exe /F $file 2>&1 | Out-Null
-            & icacls.exe $file /grant "$($adminGroup.Value):(F)" /C 2>&1 | Out-Null
+            & takeown.exe /F $file | Out-Null
+            & icacls.exe $file /grant "$($adminGroup.Value):(F)" /C | Out-Null
         }
     }
     
@@ -751,7 +790,7 @@ function Remove-SystemPackages {
             $packageIdentity = ($package -split "\s+")[0]
             if ($packageIdentity) {
                 Write-Log "Removing package: $packageIdentity"
-                & dism /image:$scratchDir /Remove-Package /PackageName:$packageIdentity /Quiet /NoRestart 2>&1 | Out-Null
+                & dism /image:$scratchDir /Remove-Package /PackageName:$packageIdentity /Quiet /NoRestart | Out-Null
                 $removeCount++
             }
         }
@@ -761,7 +800,7 @@ function Remove-SystemPackages {
 }
 
 function Remove-OptionalFeatures {
-    # Optional features are a second axis from packages: `Remove-WindowsOptionalFeature
+    # Optional features are a second axis from packages: `Disable-WindowsOptionalFeature
     # -Remove` also drops the payload from WinSxS, where Remove-SystemPackages
     # only strips the Features-on-Demand package itself. An allowlist (rather
     # than a denylist) is the safer shape here because Microsoft turns new
@@ -794,7 +833,13 @@ function Remove-OptionalFeatures {
     foreach ($feature in $enabled) {
         Write-Log "Removing optional feature: $($feature.FeatureName)"
         try {
-            Remove-WindowsOptionalFeature -Path $scratchDir -FeatureName $feature.FeatureName -Remove -NoRestart -ErrorAction Stop | Out-Null
+            # The Dism module exports Disable-WindowsOptionalFeature - there is
+            # no Remove-WindowsOptionalFeature. The first Ultra build called the
+            # non-existent name, so every feature was "attempted" and none was
+            # removed (0 of 8) while the log still read like it had worked.
+            # -Path selects the [Offline] parameter set, which is what operating on
+            # a mounted image requires; -Remove also drops the payload from WinSxS.
+            Disable-WindowsOptionalFeature -Path $scratchDir -FeatureName $feature.FeatureName -Remove -NoRestart -ErrorAction Stop | Out-Null
             $removed++
         } catch {
             Write-Log "Could not remove feature $($feature.FeatureName): $($_.Exception.Message)" "WARN"
@@ -1211,8 +1256,8 @@ function Optimize-WinSxS {
 
     # Re-assert ownership to ensure deletion is possible
     Write-Log "Ensuring ownership of WinSxS before deletion..."
-    & takeown.exe /F $sourceDirectory /R /D Y 2>&1 | Out-Null
-    & icacls.exe $sourceDirectory /grant "$($adminGroup.Value):(F)" /T /C 2>&1 | Out-Null
+    & takeown.exe /F $sourceDirectory /R /D Y | Out-Null
+    & icacls.exe $sourceDirectory /grant "$($adminGroup.Value):(F)" /T /C | Out-Null
 
     $emptyDir = "$ScratchDisk\empty_temp"
     New-Item -Path $emptyDir -ItemType Directory -Force | Out-Null
@@ -1228,34 +1273,68 @@ function Optimize-WinSxS {
 function Load-RegistryHives {
     Write-Log "Loading registry hives..."
 
-    reg load HKLM\zCOMPONENTS "$scratchDir\Windows\System32\config\COMPONENTS" 2>&1 | Out-Null
-    reg load HKLM\zDEFAULT "$scratchDir\Windows\System32\config\default" 2>&1 | Out-Null
-    reg load HKLM\zNTUSER "$scratchDir\Users\Default\ntuser.dat" 2>&1 | Out-Null
-    reg load HKLM\zSOFTWARE "$scratchDir\Windows\System32\config\SOFTWARE" 2>&1 | Out-Null
-    reg load HKLM\zSYSTEM "$scratchDir\Windows\System32\config\SYSTEM" 2>&1 | Out-Null
+    # No stderr redirection on any reg.exe call (rationale in Set-RegistryValue).
+    reg load HKLM\zCOMPONENTS "$scratchDir\Windows\System32\config\COMPONENTS" | Out-Null
+    reg load HKLM\zDEFAULT "$scratchDir\Windows\System32\config\default" | Out-Null
+    reg load HKLM\zNTUSER "$scratchDir\Users\Default\ntuser.dat" | Out-Null
+    reg load HKLM\zSOFTWARE "$scratchDir\Windows\System32\config\SOFTWARE" | Out-Null
+    reg load HKLM\zSYSTEM "$scratchDir\Windows\System32\config\SYSTEM" | Out-Null
+
+    # A hive that failed to load is worse than an obvious error: the next
+    # Set-RegistryValue call would *create* that key on the running host and
+    # silently edit the build machine's own registry instead of the image.
+    foreach ($hive in 'zCOMPONENTS','zDEFAULT','zNTUSER','zSOFTWARE','zSYSTEM') {
+        if (-not (Test-Path "HKLM:\$hive")) {
+            throw "Failed to load HKLM\$hive from the mounted image - reg load rejected it"
+        }
+    }
 
     Write-Log "Registry hives loaded"
+}
+
+function Unload-OfflineHive {
+    <#
+    Unloads one hive previously opened with `reg load`, returning $true on success.
+
+    Two things make this harder than it looks, and both are what killed the first
+    Ultra build with a bare "Access is denied":
+
+      1. `Get-ChildItem` on HKLM:\zSomething hands back live
+         Microsoft.Win32.RegistryKey objects, each holding an open handle on the
+         hive. A *single* surviving handle is enough for reg unload to fail, and
+         those handles are released lazily by the finalizer - so one GC pass is
+         not reliably enough either. Hence: dispose/nulled references, then retry.
+
+      2. Windows PowerShell 5.1 converts a native command's redirected stderr
+         (2>&1 and even 2>$null) into a terminating NativeCommandError when
+         $ErrorActionPreference='Stop'. The old `reg unload ... 2>&1` therefore
+         turned a merely-busy hive into an unrecoverable FATAL before its own
+         retry loop could ever run. Never redirect; read $LASTEXITCODE instead.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [int]$Attempts = 10,
+        [int]$DelayMs = 400
+    )
+    for ($i = 1; $i -le $Attempts; $i++) {
+        [GC]::Collect()
+        [GC]::WaitForPendingFinalizers()
+        [GC]::Collect()
+        & reg unload "HKLM\$Name" | Out-Null
+        if ($LASTEXITCODE -eq 0) { return $true }
+        Start-Sleep -Milliseconds $DelayMs
+    }
+    return $false
 }
 
 function Unload-RegistryHives {
     Write-Log "Unloading registry hives..."
 
-    # Force garbage collection to release PowerShell registry handles
-    [GC]::Collect()
-    [GC]::WaitForPendingFinalizers()
-    Start-Sleep -Seconds 3
-
     foreach ($hive in 'zCOMPONENTS','zDEFAULT','zNTUSER','zSOFTWARE','zSYSTEM') {
         if (-not (Test-Path "HKLM:\$hive")) { continue }
-        $unloaded = $false
-        foreach ($attempt in 1..3) {
-            reg unload "HKLM\$hive" 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { $unloaded = $true; break }
-            [GC]::Collect()
-            [GC]::WaitForPendingFinalizers()
-            Start-Sleep -Seconds 3
+        if (-not (Unload-OfflineHive -Name $hive)) {
+            throw "Failed to unload HKLM\$hive - registry handles still held by another process"
         }
-        if (-not $unloaded) { throw "Failed to unload HKLM\$hive - registry handles still held by another process" }
     }
 
     Write-Log "Registry hives unloaded"
@@ -1333,7 +1412,7 @@ function Remove-DefenderPackages {
             $packageIdentity = ("$package" -split '\s+')[0]
             if ($packageIdentity -like 'Windows-Defender-Client-Package~*') {
                 Write-Log "Removing package: $packageIdentity"
-                & dism /image:$scratchDir /Remove-Package /PackageName:$packageIdentity /Quiet /NoRestart 2>&1 | Out-Null
+                & dism /image:$scratchDir /Remove-Package /PackageName:$packageIdentity /Quiet /NoRestart | Out-Null
             }
         }
     } catch {
@@ -1375,8 +1454,8 @@ function Remove-DefenderPackages {
     foreach ($target in $targets) {
         if (-not (Test-Path -LiteralPath $target)) { continue }
         Write-Log "Deleting: $target"
-        & takeown.exe /F $target /R /D Y 2>&1 | Out-Null
-        & icacls.exe $target /grant "$($adminGroup.Value):(F)" /T /C /Q 2>&1 | Out-Null
+        & takeown.exe /F $target /R /D Y | Out-Null
+        & icacls.exe $target /grant "$($adminGroup.Value):(F)" /T /C /Q | Out-Null
         Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
     }
 
@@ -1676,6 +1755,64 @@ function Remove-ScheduledTasks {
     Write-Log "Scheduled tasks removed"
 }
 
+function Grant-ServiceWriteAccess {
+    <#
+    Adds ONE additive Allow ACE granting BUILTIN\Administrators full control over
+    an already-loaded service key, so `reg add` can set its Start value.
+
+    A handful of service keys (DPS, TrkWks, gpsvc, TrustedInstaller,
+    DcomLaunch, RpcSs, SamSs, Wdi*) ship with no Administrators write ACE at all,
+    so even an elevated reg.exe is refused - verified to behave identically on a
+    running Windows 11, i.e. this is Windows policy, not a builder defect.
+    Offline there is no Service Control Manager to go around it, so the ACE is the
+    equivalent of what services.msc would have asked the (SYSTEM-running) SCM to do.
+
+    Deliberately does NOT touch ownership: taking a key away from
+    NT AUTHORITY\SYSTEM or NT SERVICE\TrustedInstaller is a security change we do
+    not need, and measured before/after on the image the owner and SYSTEM's own
+    FullControl ACE both survive untouched - SetAccessRule only replaces rules for
+    the identity being added, so nothing else in the descriptor moves. If the ACE
+    cannot be added, this reports $false and the caller leaves that service at its
+    current value, which is the pre-existing behaviour anyway.
+
+    NB: this must go through .NET, not the Get-Acl/Set-Acl provider cmdlets.
+    Measured side by side on the same protected keys, Set-Acl fails outright with
+    "Requested registry access is not allowed" (it round-trips the descriptor in a
+    way these keys reject) while OpenSubKey + GetAccessControl(Access) +
+    SetAccessControl succeeds. Reading only AccessControlSections::Access is also
+    what keeps SeSecurityPrivilege out of the picture.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $key = $null
+    try {
+        $subPath = $Path -replace '^HKLM:\\', ''
+        $admins  = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+        $rule    = New-Object System.Security.AccessControl.RegistryAccessRule($admins, [System.Security.AccessControl.RegistryRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)
+        $rights  = [System.Security.AccessControl.RegistryRights]::ChangePermissions -bor [System.Security.AccessControl.RegistryRights]::ReadPermissions
+
+        $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($subPath, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, $rights)
+        if (-not $key) {
+            Write-Log "Could not open $Path to grant write access" "WARN"
+            return $false
+        }
+        $acl = $key.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)
+        $acl.SetAccessRule($rule)
+        $key.SetAccessControl($acl)
+        return $true
+    } catch {
+        Write-Log "Could not grant Administrators write on $Path : $($_.Exception.Message)" "WARN"
+        return $false
+    } finally {
+        # The open handle must go: like Get-ChildItem, a surviving RegistryKey is
+        # exactly what makes `reg unload` answer "Access is denied" later on.
+        if ($key) { $key.Close() }
+        $key = $null
+        [GC]::Collect()
+        [GC]::WaitForPendingFinalizers()
+        [GC]::Collect()
+    }
+}
+
 function Set-ServiceStartup {
     # Offline equivalent of `Set-Service -StartupType`:
     #   0 = Boot, 1 = System, 2 = Automatic, 3 = Manual, 4 = Disabled
@@ -1688,14 +1825,41 @@ function Set-ServiceStartup {
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][int]$StartValue
     )
+    # $regPath is the reg.exe form (HKLM\...). The PowerShell provider needs
+    # HKLM:\... WITHOUT repeating HKLM: the old `Test-Path "HKLM:\$regPath"`
+    # built "HKLM:\HKLM\zSYSTEM\...", which can never exist - so this returned
+    # $false for all 255 services and the entire service-tuning pass silently
+    # did nothing while still logging as if it had worked.
+    $psPath  = "HKLM:\zSYSTEM\ControlSet001\Services\$Name"
     $regPath = "HKLM\zSYSTEM\ControlSet001\Services\$Name"
-    if (-not (Test-Path "HKLM:\$regPath")) { return $false }
+    if (-not (Test-Path $psPath)) { return $false }
 
-    & 'reg' 'add' $regPath '/v' 'Start' '/t' 'REG_DWORD' '/d' "$StartValue" '/f' 2>&1 | Out-Null
+    # Already at the requested value? Skip the write. Besides saving a process
+    # spawn per service, this is what keeps us from needlessly asking for write
+    # access on the protected keys that already hold the right setting.
+    $probe  = Get-ItemProperty -Path $psPath -ErrorAction SilentlyContinue
+    $spNow  = $probe.PSObject.Properties['Start']
+    $same   = ($spNow -and [int]$spNow.Value -eq $StartValue)
+    $probe  = $null
+    $spNow  = $null
+    if ($same) { return $true }
+
+    # No stderr redirection (rationale in Set-RegistryValue), plus an explicit
+    # exit-code check so a Start value we failed to write is not counted as a
+    # service we successfully reconfigured.
+    & 'reg' 'add' $regPath '/v' 'Start' '/t' 'REG_DWORD' '/d' "$StartValue" '/f' | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        if (-not (Grant-ServiceWriteAccess -Path $psPath)) { return $false }
+        & 'reg' 'add' $regPath '/v' 'Start' '/t' 'REG_DWORD' '/d' "$StartValue" '/f' | Out-Null
+        if ($LASTEXITCODE -ne 0) { return $false }
+    }
+
     if ($StartValue -ne 2) {
         # A leftover DelayedAutostart would silently turn Manual/Disabled into
-        # a delayed-auto start.
-        & 'reg' 'delete' $regPath '/v' 'DelayedAutostart' '/f' 2>&1 | Out-Null
+        # a delayed-auto start. The value is absent on almost every service, so
+        # reg.exe would print ~250 expected "value not found" ERROR lines into the
+        # build log; the provider swallows that quietly via -ErrorAction.
+        Remove-ItemProperty -LiteralPath $psPath -Name 'DelayedAutostart' -ErrorAction SilentlyContinue
     }
     return $true
 }
@@ -1720,8 +1884,11 @@ function Tune-Services {
     # with a working service record behind it.
     Write-Log "Tuning services (winutil-style: run as little as possible)..."
 
-    # Load SYSTEM hive separately - service tuning is a standalone registry job
-    reg load HKLM\zSYSTEM "$scratchDir\Windows\System32\config\SYSTEM" 2>&1 | Out-Null
+    # Load SYSTEM hive separately - service tuning is a standalone registry job.
+    # No stderr redirection (rationale in Set-RegistryValue): with it, a rejected
+    # load would throw before the guard below and turn this graceful skip into a
+    # FATAL instead.
+    reg load HKLM\zSYSTEM "$scratchDir\Windows\System32\config\SYSTEM" | Out-Null
     if (-not (Test-Path 'HKLM:\zSYSTEM\ControlSet001\Services')) {
         Write-Log "Could not load the offline SYSTEM hive - service tuning skipped" "WARN"
         return
@@ -1804,21 +1971,37 @@ function Tune-Services {
     $stats = @{ NonService = 0; Driver = 0; Auto = 0; Manual = 0; Disabled = 0 }
     $entries = New-Object System.Collections.Generic.List[object]
 
-    foreach ($key in (Get-ChildItem -Path 'HKLM:\zSYSTEM\ControlSet001\Services' -ErrorAction SilentlyContinue)) {
-        $props      = Get-ItemProperty -Path $key.PSPath -ErrorAction SilentlyContinue
-        # StrictMode forbids touching properties that are not there, so probe
-        # the property bag instead of reading $props.Type directly.
-        $typeProp   = $props.PSObject.Properties['Type']
-        $startProp  = $props.PSObject.Properties['Start']
-        if (-not $typeProp -or -not $startProp) { $stats.NonService++; continue }
+    # Get-ChildItem hands back live Microsoft.Win32.RegistryKey objects, each
+    # holding an open handle on the SYSTEM hive; a single surviving handle makes
+    # the unload at the end of this function fail with "Access is denied". Dispose
+    # each key as soon as it is read - the try/finally is what keeps the `continue`
+    # shortcuts below from skipping it. (Get-ItemProperty returns a plain
+    # PSCustomObject and holds no handle, so it needs no such care.)
+    $serviceKeys = @(Get-ChildItem -Path 'HKLM:\zSYSTEM\ControlSet001\Services' -ErrorAction SilentlyContinue)
+    foreach ($key in $serviceKeys) {
+        try {
+            $props      = Get-ItemProperty -Path $key.PSPath -ErrorAction SilentlyContinue
+            # StrictMode forbids touching properties that are not there, so probe
+            # the property bag instead of reading $props.Type directly.
+            $typeProp   = $props.PSObject.Properties['Type']
+            $startProp  = $props.PSObject.Properties['Start']
+            if (-not $typeProp -or -not $startProp) { $stats.NonService++; continue }
 
-        $typeValue = [int]$typeProp.Value
-        if (($typeValue -band 3) -ne 0)          { $stats.Driver++;     continue }  # kernel / fs driver
-        if (($typeValue -band 48) -eq 0)         { $stats.NonService++; continue }  # not 16|32: not a Win32 service
-        if ([int]$startProp.Value -le 1)         { $stats.Driver++;     continue }  # Boot / System load order
+            $typeValue = [int]$typeProp.Value
+            if (($typeValue -band 3) -ne 0)          { $stats.Driver++;     continue }  # kernel / fs driver
+            if (($typeValue -band 48) -eq 0)         { $stats.NonService++; continue }  # not 16|32: not a Win32 service
+            if ([int]$startProp.Value -le 1)         { $stats.Driver++;     continue }  # Boot / System load order
 
-        $entries.Add([pscustomobject]@{ Name = $key.PSChildName; Start = [int]$startProp.Value })
+            $entries.Add([pscustomobject]@{ Name = $key.PSChildName; Start = [int]$startProp.Value })
+        } finally {
+            $keyBase = $key.PSObject.BaseObject
+            if ($keyBase -is [IDisposable]) { try { $keyBase.Dispose() } catch { } }
+            $keyBase = $null
+            $props   = $null
+        }
     }
+    $serviceKeys = $null
+    $key         = $null
 
     $autoBefore = @($entries | Where-Object { $_.Start -eq 2 }).Count
 
@@ -1836,7 +2019,14 @@ function Tune-Services {
         }
     }
 
-    reg unload HKLM\zSYSTEM 2>&1 | Out-Null
+    # This was `reg unload HKLM\zSYSTEM 2>&1 | Out-Null`, and it is what aborted
+    # the first Ultra build: the hive was still busy from the enumeration above,
+    # reg.exe said "Access is denied" on stderr, and 2>&1 under
+    # $ErrorActionPreference='Stop' made that a terminating error - before any
+    # retry logic could run. Unload-OfflineHive does it properly.
+    if (-not (Unload-OfflineHive -Name 'zSYSTEM')) {
+        throw "Could not unload the offline SYSTEM hive after service tuning - it is still locked, so the image cannot be unmounted"
+    }
 
     $autoAfter = $stats.Auto
     Write-Log ("Service tuning complete: auto-start {0} -> {1}, manual {2}, disabled {3} (skipped {4} drivers / {5} non-service keys)" -f `
@@ -1896,7 +2086,9 @@ function Disable-BackgroundApps {
 #---------[ Finalization Functions ]---------#
 function Optimize-WindowsImage {
     Write-Log "Cleaning up Windows image (this may take 10-15 minutes)..."
-    & dism.exe /Image:$scratchDir /Cleanup-Image /StartComponentCleanup /ResetBase 2>&1 | Out-Null
+    # No 2>&1 (rationale in Set-RegistryValue): a component store that reports a
+    # warning on stderr must not abort finalisation when DISM itself exited 0.
+    & dism.exe /Image:$scratchDir /Cleanup-Image /StartComponentCleanup /ResetBase | Out-Null
     Write-Log "Image cleanup complete"
 }
 
@@ -1964,8 +2156,8 @@ function Process-BootImage {
     $bootWimPath = "$ultra11Dir\sources\boot.wim"
 
     # Take ownership
-    & takeown /F $bootWimPath /A 2>&1 | Out-Null
-    & icacls $bootWimPath /grant "$($adminGroup.Value):(F)" 2>&1 | Out-Null
+    & takeown /F $bootWimPath /A | Out-Null
+    & icacls $bootWimPath /grant "$($adminGroup.Value):(F)" | Out-Null
     Set-ItemProperty -Path $bootWimPath -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
 
     # Export only index 2 (setup image)
@@ -1977,11 +2169,16 @@ function Process-BootImage {
     Write-Log "Mounting boot image for modifications..."
     & dism /English /mount-image "/imagefile:$newBootWimPath" /index:1 "/mountdir:$scratchDir"
 
-    # Load registry and apply bypasses
-    reg load HKLM\zDEFAULT "$scratchDir\Windows\System32\config\default" 2>&1 | Out-Null
-    reg load HKLM\zNTUSER "$scratchDir\Users\Default\ntuser.dat" 2>&1 | Out-Null
-    reg load HKLM\zSOFTWARE "$scratchDir\Windows\System32\config\SOFTWARE" 2>&1 | Out-Null
-    reg load HKLM\zSYSTEM "$scratchDir\Windows\System32\config\SYSTEM" 2>&1 | Out-Null
+    # Load registry and apply bypasses. No stderr redirection (rationale in
+    # Set-RegistryValue) - a rejected load must fail loudly below, not throw a
+    # NativeCommandError out of this helper.
+    reg load HKLM\zDEFAULT "$scratchDir\Windows\System32\config\default" | Out-Null
+    reg load HKLM\zNTUSER "$scratchDir\Users\Default\ntuser.dat" | Out-Null
+    reg load HKLM\zSOFTWARE "$scratchDir\Windows\System32\config\SOFTWARE" | Out-Null
+    reg load HKLM\zSYSTEM "$scratchDir\Windows\System32\config\SYSTEM" | Out-Null
+    foreach ($hive in 'zDEFAULT','zNTUSER','zSOFTWARE','zSYSTEM') {
+        if (-not (Test-Path "HKLM:\$hive")) { throw "Failed to load HKLM\$hive into the boot image" }
+    }
 
     Write-Log "Applying system requirement bypasses and WinRE suppression to boot image..."
     Set-RegistryValue 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' 'SV1' 'REG_DWORD' '0'
@@ -2007,11 +2204,15 @@ function Process-BootImage {
         Patch-ReAgentXml
     }
 
-    # Unload registry
-    reg unload HKLM\zNTUSER 2>&1 | Out-Null
-    reg unload HKLM\zDEFAULT 2>&1 | Out-Null
-    reg unload HKLM\zSOFTWARE 2>&1 | Out-Null
-    reg unload HKLM\zSYSTEM 2>&1 | Out-Null
+    # Unload registry. Retry with GC rather than a single shot: a hive that is
+    # still busy must not be reported as unloaded, and 2>&1 here would abort the
+    # build on the first busy attempt instead of retrying.
+    foreach ($hive in 'zNTUSER','zDEFAULT','zSOFTWARE','zSYSTEM') {
+        if (-not (Test-Path "HKLM:\$hive")) { continue }
+        if (-not (Unload-OfflineHive -Name $hive)) {
+            throw "Failed to unload HKLM\$hive from the boot image - it is still locked"
+        }
+    }
 
     Start-Sleep -Seconds 5
 
@@ -2180,8 +2381,17 @@ function Invoke-Cleanup {
 
     Write-Log "Performing cleanup..."
 
-    # Ensure image is unmounted
-    & dism /English /unmount-image "/mountdir:$scratchDir" /discard 2>&1 | Out-Null
+    # Ensure image is unmounted. It normally already is (Dismount-AndExport ran
+    # earlier), and DISM then answers "image is not currently mounted" on stderr.
+    # With the old `2>&1` that was a terminating error under
+    # $ErrorActionPreference='Stop', so this line aborted Invoke-Cleanup BEFORE
+    # the staging directory was deleted - which is why an aborted/successful
+    # build alike left ~8.5 GB of scripts\ultra11 behind.
+    $stillMounted = @(Get-WindowsImage -Mounted -ErrorAction SilentlyContinue |
+                       Where-Object { $_.Path -eq $scratchDir })
+    if ($stillMounted.Count -gt 0) {
+        & dism /English /unmount-image "/mountdir:$scratchDir" /discard | Out-Null
+    }
 
     Remove-Item -Path $ultra11Dir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $scratchDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -2280,17 +2490,36 @@ try {
     Write-Log "FATAL ERROR: $_" "ERROR"
     Write-Log "Stack trace: $($_.ScriptStackTrace)" "ERROR"
 
-    # Emergency cleanup
+    # Emergency cleanup.
+    #
+    # Order matters: a loaded hive keeps files inside the mount directory open, so
+    # the hives have to go BEFORE the image can unmount. The first attempt did it
+    # the other way round, which is why the emergency dismount failed and left the
+    # mount (and HKLM\zSYSTEM) behind. Each step is also isolated so that one
+    # failure can no longer skip the steps after it.
     try {
         Dismount-SourceIso
+    } catch {
+        Write-Log "Emergency source ISO dismount failed: $_" "WARN"
+    }
 
-        Get-WindowsImage -Mounted | ForEach-Object {
-            Write-Log "Emergency dismount: $($_.Path)" "WARN"
-            Dismount-WindowsImage -Path $_.Path -Discard -ErrorAction SilentlyContinue
+    foreach ($hive in "zCOMPONENTS", "zDEFAULT", "zNTUSER", "zSOFTWARE", "zSYSTEM") {
+        try {
+            if (Test-Path "HKLM:\$hive") { [void](Unload-OfflineHive -Name $hive) }
+        } catch {
+            Write-Log "Emergency hive unload failed for HKLM\$hive : $_" "WARN"
         }
+    }
 
-        @("zCOMPONENTS", "zDEFAULT", "zNTUSER", "zSOFTWARE", "zSYSTEM") | ForEach-Object {
-            reg unload "HKLM\$_" 2>$null
+    try {
+        foreach ($mounted in @(Get-WindowsImage -Mounted)) {
+            $mountPath = $mounted.Path
+            Write-Log "Emergency dismount: $mountPath" "WARN"
+            try {
+                Dismount-WindowsImage -Path $mountPath -Discard -ErrorAction SilentlyContinue
+            } catch {
+                Write-Log "Emergency dismount failed for ${mountPath}: $_" "WARN"
+            }
         }
     } catch {
         Write-Log "Emergency cleanup failed: $_" "ERROR"
