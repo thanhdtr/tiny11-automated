@@ -1,11 +1,38 @@
 ﻿<#
 .SYNOPSIS
-    Headless script to build a minimized Windows 11 Nano image for CI/CD automation.
+    Headless script that builds the "ultra11" image: Nano pushed to the
+    absolute minimum that still installs and boots.
 
 .DESCRIPTION
-    Automated build of an extremely streamlined Windows 11 Nano image without user interaction.
-    This is the most aggressive Windows 11 optimization, removing drivers, fonts, services,
-    and more. NOT suitable for any regular use - designed for rapid testing in VMs only.
+    Ultra is a separate, fourth variant - Nano is left untouched for people who
+    need a usable image. It starts from Nano's aggressive base (bloatware,
+    fonts, driver classes, WinSxS, input methods, speech, WinRE, Defender and
+    Windows Update binaries already stripped) and then goes further, with the
+    headline being service minimisation:
+
+      * Every one of the ~678 service keys in the image is classified, rather
+        than working from a hand-maintained blocklist. Kernel/file-system
+        drivers and Boot/System load-order entries are never touched; every
+        Win32 service that is not on a keep list is set to Disabled.
+      * Auto-start Win32 services go from 63 in stock Windows down to the 28
+        in the dependency closure of what the SCM actually needs to reach a
+        desktop, plus a 20-entry Manual tier for things that should still be
+        startable on demand (winutil's MapsBroker/StorSvc convention, RDP,
+        W32Time, the clipboard host, and so on).
+      * Startup types are written as the 'Start' DWORD (2=Automatic,
+        3=Manual, 4=Disabled) instead of Nano's outright key deletion, so the
+        Service Control Manager still has a valid record behind them.
+      * winutil's background-apps kill switch (GlobalUserDisabled) and its
+        privacy/telemetry policy block are baked in, along with a first-logon
+        recompute of SvcHostSplitThresholdInKB from the target machine's RAM
+        so svchost processes get packed together.
+
+    NOTHING ELSE IS GUARANTEED. The contract is: it installs, it reaches a
+    desktop, and as little as possible is running. Individual apps and features
+    will fail - there is no print spooler, no audio, no firewall, no Windows
+    Search indexer, no SMB/UNC access and no in-guest clipboard unless you flip
+    the corresponding entry in $keepManual/$keepAuto back to a working startup
+    type. VM testing only; do not use this on hardware you care about.
 
 .PARAMETER ISO
     Drive letter of the mounted Windows 11 ISO (e.g., E), or the full path to a
@@ -35,18 +62,18 @@
     Compression for the install.wim export: max (default), fast or recovery
     (smallest - single-threaded DISM, slowest). fast/max are exported with
     wimlib (multi-threaded, downloaded and SHA256-verified at build time);
-    any wimlib failure falls back to DISM automatically. Core and Nano still
+    any wimlib failure falls back to DISM automatically. Core and ultra still
     recompress to a solid ESD at the end for minimum size.
 
 .PARAMETER SkipCleanup
     Skip cleanup of temporary files after ISO creation (optional, for debugging)
 
 .EXAMPLE
-    .\nano11builder-headless.ps1 -ISO E -INDEX 1
-    .\nano11builder-headless.ps1 -ISO E -INDEX 6 -SCRATCH D -SkipCleanup
-    .\nano11builder-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 1 -BackupDrivers
-    .\nano11builder-headless.ps1 -ISO E -INDEX 1 -Defender Keep
-    .\nano11builder-headless.ps1 -ISO E -INDEX 1
+    .\ultra11builder-headless.ps1 -ISO E -INDEX 1
+    .\ultra11builder-headless.ps1 -ISO E -INDEX 6 -SCRATCH D -SkipCleanup
+    .\ultra11builder-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 1 -BackupDrivers
+    .\ultra11builder-headless.ps1 -ISO E -INDEX 1 -Defender Keep
+    .\ultra11builder-headless.ps1 -ISO E -INDEX 1
 
 .NOTES
     Original Author: ntdevlabs
@@ -112,17 +139,17 @@ if ($ISO -match '^[a-zA-Z]:?$') {
     $DriveLetter = $null  # .iso file path - mounted by Initialize-IsoSource
 }
 $driverBackupDir = Join-Path $PSScriptRoot 'host_drivers'
-$wimFilePath = "$ScratchDisk\nano11\sources\install.wim"
+$wimFilePath = "$ScratchDisk\ultra11\sources\install.wim"
 $scratchDir = "$ScratchDisk\scratchdir"
-$nano11Dir = "$ScratchDisk\nano11"
-$outputISO = "$PSScriptRoot\nano11.iso"
+$ultra11Dir = "$ScratchDisk\ultra11"
+$outputISO = "$PSScriptRoot\ultra11.iso"
 if ($OutputDir) {
     $od = $OutputDir.Trim().Trim('"')
     if (-not [System.IO.Path]::IsPathRooted($od)) { $od = Join-Path -Path (Get-Location).Path -ChildPath $od }
     $outputISO = Join-Path ([System.IO.Path]::GetFullPath($od)) (Split-Path -Leaf $outputISO)
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $outputISO) | Out-Null
 }
-$logFile = "$PSScriptRoot\nano11_$(Get-Date -Format yyyyMMdd_HHmmss).log"
+$logFile = "$PSScriptRoot\ultra11_$(Get-Date -Format yyyyMMdd_HHmmss).log"
 
 # Initialize admin identifiers for permission operations
 try {
@@ -340,13 +367,13 @@ function Test-Prerequisites {
         throw "Windows installation files not found"
     }
 
-    # Check disk space (minimum 30GB recommended for Nano build)
+    # Check disk space (minimum 30GB recommended for ultra build)
     $disk = Get-PSDrive -Name $ScratchDisk[0] -ErrorAction SilentlyContinue
     if ($disk) {
         $freeGB = [math]::Round($disk.Free / 1GB, 2)
         Write-Log "Available space on ${ScratchDisk}: ${freeGB}GB"
         if ($freeGB -lt 30) {
-            Write-Log "Low disk space warning: ${freeGB}GB (30GB+ recommended for Nano build)" "WARN"
+            Write-Log "Low disk space warning: ${freeGB}GB (30GB+ recommended for ultra build)" "WARN"
         }
     }
 
@@ -355,7 +382,7 @@ function Test-Prerequisites {
 
 function Initialize-Directories {
     Write-Log "Initializing directories..."
-    New-Item -ItemType Directory -Force -Path "$nano11Dir\sources" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$ultra11Dir\sources" | Out-Null
     New-Item -ItemType Directory -Force -Path $scratchDir | Out-Null
     Write-Log "Directories created"
 }
@@ -364,7 +391,7 @@ function Convert-ESDToWIM {
     Write-Log "Converting install.esd to install.wim..."
 
     $esdPath = "$DriveLetter\sources\install.esd"
-    $tempWimPath = "$nano11Dir\sources\install.wim"
+    $tempWimPath = "$ultra11Dir\sources\install.wim"
 
     # Validate index exists in ESD
     $images = Get-WindowsImage -ImagePath $esdPath
@@ -385,11 +412,11 @@ function Convert-ESDToWIM {
 
 function Copy-WindowsFiles {
     Write-Log "Copying Windows installation files from $DriveLetter..."
-    Copy-Item -Path "$DriveLetter\*" -Destination $nano11Dir -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -Path "$DriveLetter\*" -Destination $ultra11Dir -Recurse -Force -ErrorAction SilentlyContinue
 
     # Remove install.esd if present
-    if (Test-Path "$nano11Dir\sources\install.esd") {
-        Remove-Item "$nano11Dir\sources\install.esd" -Force -ErrorAction SilentlyContinue
+    if (Test-Path "$ultra11Dir\sources\install.esd") {
+        Remove-Item "$ultra11Dir\sources\install.esd" -Force -ErrorAction SilentlyContinue
     }
 
     Write-Log "File copy complete"
@@ -569,9 +596,9 @@ function Get-ImageMetadata {
     }
 }
 
-#---------[ Nano11-Specific Removal Functions ]---------#
+#---------[ ultra11-Specific Removal Functions ]---------#
 function Remove-BloatwareApps {
-    Write-Log "Removing provisioned appx packages (extended nano11 list)..."
+    Write-Log "Removing provisioned appx packages (extended ultra11 list)..."
 
     $packagesToRemove = Get-AppxProvisionedPackage -Path $scratchDir | Where-Object {
         $_.PackageName -like '*Zune*' -or
@@ -620,7 +647,25 @@ function Remove-BloatwareApps {
         $_.PackageName -like '*MPEG2VideoExtension*' -or
         $_.PackageName -like '*WebMediaExtensions*' -or
         $_.PackageName -like '*WindowsAI*' -or
-        $_.PackageName -like '*AIFabric*'
+        $_.PackageName -like '*AIFabric*' -or
+
+        # --- ultra additions -------------------------------------------------
+        # *Gaming* only catches XboxGamingOverlay; the rest of the Xbox AppX
+        # family (identity provider, game callable UI, speech-to-text, GIP) is
+        # matched separately.
+        $_.PackageName -like '*Xbox*' -or
+        $_.PackageName -like '*WindowsTerminal*' -or
+        $_.PackageName -like '*Getstarted*' -or        # Tips
+        $_.PackageName -like '*Cortana*' -or
+        $_.PackageName -like '*549981C3F5F10*' -or      # Cortana's actual package id
+        $_.PackageName -like '*WindowsReadingList*' -or
+        # StorePurchaseApp was already in the list above, which leaves the Store
+        # itself a half-state; remove the rest so there is no broken Store icon.
+        # NOTE: *AppInstaller* is deliberately NOT added - that is
+        # Microsoft.DesktopAppInstaller, i.e. winget, which must survive.
+        $_.PackageName -like '*WindowsStore*' -or
+        # Windows Security UI only makes sense alongside Defender
+        (($_.PackageName -like '*SecHealthUI*') -and ($Defender -ne 'Keep'))
     }
 
     $removeCount = 0
@@ -647,7 +692,7 @@ function Remove-BloatwareApps {
 }
 
 function Remove-SystemPackages {
-    Write-Log "Removing system packages (extended nano11 list)..."
+    Write-Log "Removing system packages (extended ultra11 list)..."
 
     $packagePatterns = @(
         # Legacy Components & Optional Apps
@@ -715,6 +760,50 @@ function Remove-SystemPackages {
     Write-Log "Removed $removeCount system packages"
 }
 
+function Remove-OptionalFeatures {
+    # Optional features are a second axis from packages: `Remove-WindowsOptionalFeature
+    # -Remove` also drops the payload from WinSxS, where Remove-SystemPackages
+    # only strips the Features-on-Demand package itself. An allowlist (rather
+    # than a denylist) is the safer shape here because Microsoft turns new
+    # features on by default in every 25H2 servicing release and we would never
+    # notice a denylist going stale.
+    Write-Log "Removing optional features..."
+
+    $keep = @(
+        'NetFx4-AdvSrvs',              # .NET Framework 4.x - plenty of Win32 apps still need it
+        'MediaPlayback',               # base media stack, i.e. video playback at all
+        'WCF-Services45',              # default-on .NET WCF subset
+        'WCF-TCP-PortSharing45',
+        'VirtualMachinePlatform',      # nested virtualisation is a plausible use for a VM image
+        'HypervisorPlatform',
+        'Microsoft-Windows-Subsystem-Linux'
+    )
+    if ($Defender -eq 'Keep') { $keep += 'Windows-Defender-Default-Definitions' }
+
+    $enabled = @()
+    try {
+        $enabled = @(Get-WindowsOptionalFeature -Path $scratchDir -ErrorAction Stop |
+            Where-Object { ([string]$_.State) -eq 'Enabled' -and $_.FeatureName -notin $keep })
+    } catch {
+        Write-Log "Could not enumerate optional features: $($_.Exception.Message)" "WARN"
+        return
+    }
+
+    Write-Log "Removing $($enabled.Count) enabled optional features (keeping $($keep.Count))..."
+    $removed = 0
+    foreach ($feature in $enabled) {
+        Write-Log "Removing optional feature: $($feature.FeatureName)"
+        try {
+            Remove-WindowsOptionalFeature -Path $scratchDir -FeatureName $feature.FeatureName -Remove -NoRestart -ErrorAction Stop | Out-Null
+            $removed++
+        } catch {
+            Write-Log "Could not remove feature $($feature.FeatureName): $($_.Exception.Message)" "WARN"
+        }
+    }
+
+    Write-Log "Removed $removed optional features"
+}
+
 function Remove-NativeImages {
     Write-Log "Removing pre-compiled .NET assemblies (Native Images)..."
     $nativeImagesPath = "$scratchDir\Windows\assembly\NativeImages_*"
@@ -728,28 +817,56 @@ function Slim-DriverStore {
     $driverRepo = "$scratchDir\Windows\System32\DriverStore\FileRepository"
     $patternsToRemove = @(
         'prn*',      # Printer drivers
+        'ntprint*',  # Print support driver repository (Nano's prn* glob misses this prefix)
         'scan*',     # Scanner drivers
         'mfd*',      # Multi-function device drivers
         'wscsmd.inf*', # Smartcard readers
         'tapdrv*',   # Tape drives
         # rdpbus.inf intentionally kept: virtual bus enumeration path used by VMware/Hyper-V during setup
-        'tdibth.inf*'  # Bluetooth Personal Area Network
+        'tdibth.inf*', # Bluetooth Personal Area Network
+        'helloface*',  # Windows Hello Face - ~96MB, and the Hello Face FoD package
+                       # is already removed by Remove-SystemPackages so this driver
+                       # would be an orphan anyway
+        'bth*',        # Bluetooth stack - no radio in a VM, and the Bluetooth
+                       # services are disabled by Tune-Services
+
+        # Physical 802.11 drivers. A VM presents an emulated Ethernet adapter and
+        # can never see an 802.11 radio (short of USB passthrough), and these are
+        # ~200MB of Intel/Realtek/Atheros/Qualcomm Wi-Fi images. Wired ethernet,
+        # virtio, VMXNET and the Hyper-V/VMware network adapters are matched by
+        # completely different INF prefixes and are not touched here.
+        'netwtw*',   # Intel Wi-Fi 6/6E/7
+        'netwns*',   # Intel Wi-Fi 6
+        'netwew*',   # Intel Wi-Fi 5
+        'netwsw*',   # Intel Wi-Fi 6E
+        'netwbw*',   # Intel Wi-Fi
+        'netwbz*',
+        'netwlv*',   # Intel Centrino (legacy)
+        'netrtw*',   # Realtek RTL8xxx
+        'rtwlan*',   # Realtek RTL8xxx
+        'netath*',   # Atheros / Qualcomm
+        'athw*',
+        'athr*',
+        'qcwlan*'    # Qualcomm
     )
 
     $removeCount = 0
+    $freedMB = 0
     Get-ChildItem -Path $driverRepo -Directory -ErrorAction SilentlyContinue | ForEach-Object {
         $driverFolder = $_.Name
         foreach ($pattern in $patternsToRemove) {
             if ($driverFolder -like $pattern) {
-                Write-Log "Removing driver: $driverFolder"
+                $size = (Get-ChildItem -Path $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+                Write-Log "Removing driver: $driverFolder ($([math]::Round($size/1MB,1)) MB)"
                 Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
                 $removeCount++
+                $freedMB += [math]::Round($size/1MB, 1)
                 break
             }
         }
     }
 
-    Write-Log "Removed $removeCount driver packages"
+    Write-Log "Removed $removeCount driver packages (~$freedMB MB)"
 }
 
 function Reduce-Fonts {
@@ -789,7 +906,7 @@ function Clean-InputMethods {
 function Remove-MiscellaneousFiles {
     Write-Log "Performing aggressive file deletions..."
     
-    # Speech (Full removal for Nano)
+    # Speech (Full removal for ultra)
     Remove-Item -Path "$scratchDir\Windows\Speech" -Recurse -Force -ErrorAction SilentlyContinue
     
     # Windows Error Reporting (WER)
@@ -821,6 +938,50 @@ function Remove-MiscellaneousFiles {
     Remove-Item -Path "$scratchDir\Windows\SoftwareDistribution" -Recurse -Force -ErrorAction SilentlyContinue
 
     Write-Log "Miscellaneous files removed"
+}
+
+function Remove-UltraExtras {
+    # Directories a stock 25H2 image ships that Nano leaves untouched. Each one
+    # was measured off the source image and checked against what the rest of
+    # this script has already removed, so nothing here is orphaned for a reason
+    # we did not already account for. Paths that are absent are skipped.
+    Write-Log "Removing ultra-specific leftovers (measured against a stock 25H2 image)..."
+
+    $targets = [ordered]@{
+        # --- Windows\SystemApps: Nano only removes SecHealthUI ---------------
+        "$scratchDir\Windows\SystemApps\Microsoft.MicrosoftEdgeDevToolsClient_8wekyb3d8bbwe" = 'Edge DevTools - Edge itself is removed (10.6 MB)'
+        "$scratchDir\Windows\SystemApps\MicrosoftWindows.Client.CoreAI_cw5n1h2txyewy"        = 'Recall/Copilot UI host - Recall and WindowsAI packages already removed (28.9 MB)'
+        "$scratchDir\Windows\SystemApps\Microsoft.AIFabric.CBS.1.6_8wekyb3d8bbwe"           = 'Windows AI fabric - AIFabric/WindowsAI AppX already removed (8.2 MB)'
+
+        # --- Windows\System32 + SysWOW64 leftovers ---------------------------
+        "$scratchDir\Windows\System32\migwiz"         = 'Windows Easy Transfer (43.1 MB)'
+        "$scratchDir\Windows\SysWOW64\migwiz"         = 'Windows Easy Transfer, 32-bit'
+        "$scratchDir\Windows\System32\F12"            = 'Internet Explorer F12 developer tools - IE package already removed (17.4 MB)'
+        "$scratchDir\Windows\SysWOW64\F12"            = 'Internet Explorer F12 developer tools, 32-bit'
+        "$scratchDir\Windows\System32\braille-tables" = 'braille display tables (10.1 MB)'
+        "$scratchDir\Windows\System32\Speech_OneCore" = 'OneCore speech runtime - Windows\Speech already removed (12.5 MB)'
+    }
+
+    $freedMB = 0
+    foreach ($entry in $targets.GetEnumerator()) {
+        $path = $entry.Key
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $size = (Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+        $mb = [math]::Round(($size / 1MB), 1)
+        Write-Log "Removing $path ($mb MB) - $($entry.Value)"
+        Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+        $freedMB += $mb
+    }
+
+    # Duplicate WindowsAppRuntime framework packages: the image carries 1.5, 1.6,
+    # 1.7 and 1.8 (~268 MB). Deliberately NOT removed - they are framework
+    # dependencies that other packages pin to a specific minor version, and
+    # breaking them costs more than the ~168 MB would buy.
+    if ($freedMB -gt 0) {
+        Write-Log "Ultra leftovers removed (~$freedMB MB)"
+    } else {
+        Write-Log "No ultra leftovers found" "WARN"
+    }
 }
 
 function Remove-EdgeAndOneDrive {
@@ -1276,11 +1437,11 @@ function Apply-RegistryTweaks {
     # Enable local accounts on OOBE
     Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\OOBE' 'BypassNRO' 'REG_DWORD' '1'
 
-    # Copy autounattend-nano.xml as autounattend.xml
-    $nanoAutoUnattend = Join-Path (Split-Path $PSScriptRoot -Parent) "autounattend-nano.xml"
-    if (Test-Path $nanoAutoUnattend) {
-        Copy-Item -Path $nanoAutoUnattend -Destination "$scratchDir\Windows\System32\Sysprep\autounattend.xml" -Force
-        Write-Log "Copied autounattend-nano.xml to Sysprep"
+    # Copy autounattend-ultra.xml as autounattend.xml
+    $ultraAutoUnattend = Join-Path (Split-Path $PSScriptRoot -Parent) "autounattend-ultra.xml"
+    if (Test-Path $ultraAutoUnattend) {
+        Copy-Item -Path $ultraAutoUnattend -Destination "$scratchDir\Windows\System32\Sysprep\autounattend.xml" -Force
+        Write-Log "Copied autounattend-ultra.xml to Sysprep"
     }
 
     # Disable reserved storage
@@ -1478,6 +1639,16 @@ function Apply-PerformanceTweaks {
     Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' 'PerfTuneBCD' 'REG_SZ' `
         'powershell -WindowStyle Hidden -ExecutionPolicy Bypass -Command "& bcdedit /set timeout 5 2>&1 | Out-Null; & bcdedit /set disabledynamictick yes 2>&1 | Out-Null; & bcdedit /set useplatformtick yes 2>&1 | Out-Null"'
 
+    # ── Service host packing ────────────────────────────────────────────────
+    # winutil sets SvcHostSplitThresholdInKB to the machine's RAM so the SCM
+    # packs service groups into fewer svchost.exe processes instead of one per
+    # group. We cannot read the target VM's RAM from here (this is the build
+    # host), so bake a generous floor now and let a RunOnce recompute the real
+    # figure on first logon, when the hardware is known. Takes effect on reboot.
+    Set-RegistryValue 'HKLM\zSYSTEM\ControlSet001\Control' 'SvcHostSplitThresholdInKB' 'REG_DWORD' '4194304'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' 'PerfTuneSvcHost' 'REG_SZ' `
+        'powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Set-ItemProperty -Path ''HKLM:\SYSTEM\CurrentControlSet\Control'' -Name SvcHostSplitThresholdInKB -Value ([int]((Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum/1KB)) -Type DWord"'
+
     Write-Log "Performance optimizations applied (gaming/VM profile)"
 
     # Always-on: Ultimate Performance power plan (activated at first logon)
@@ -1505,41 +1676,221 @@ function Remove-ScheduledTasks {
     Write-Log "Scheduled tasks removed"
 }
 
-function Remove-Services {
-    Write-Log "Removing non-essential services (nano11-specific)..."
+function Set-ServiceStartup {
+    # Offline equivalent of `Set-Service -StartupType`:
+    #   0 = Boot, 1 = System, 2 = Automatic, 3 = Manual, 4 = Disabled
+    # Set-Service and sc.exe talk to the Service Control Manager of the RUNNING
+    # OS; nothing here is running, so the 'Start' DWORD under
+    # ControlSet001\Services\<name> is the only lever - and it is exactly what
+    # Set-Service ends up writing on a live system. Never creates a key: a
+    # service that does not exist in this image is silently skipped.
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int]$StartValue
+    )
+    $regPath = "HKLM\zSYSTEM\ControlSet001\Services\$Name"
+    if (-not (Test-Path "HKLM:\$regPath")) { return $false }
 
-    # Load SYSTEM hive separately for service removal
+    & 'reg' 'add' $regPath '/v' 'Start' '/t' 'REG_DWORD' '/d' "$StartValue" '/f' 2>&1 | Out-Null
+    if ($StartValue -ne 2) {
+        # A leftover DelayedAutostart would silently turn Manual/Disabled into
+        # a delayed-auto start.
+        & 'reg' 'delete' $regPath '/v' 'DelayedAutostart' '/f' 2>&1 | Out-Null
+    }
+    return $true
+}
+
+function Tune-Services {
+    # Run as few services as possible: classify EVERY service key in the image
+    # instead of hand-maintaining a "disable these" list, so services Microsoft
+    # adds in future 25H2 servicing updates get caught too.
+    #
+    # Skip rules (in order):
+    #   * no Type / no Start value -> Winsock, COM and .NET registration
+    #     containers that live under Services\ but are not services
+    #   * Type & 3                 -> kernel / file-system driver. Untouched:
+    #     boot and PnP safety matters more than the handful of extra drivers,
+    #     and demand-start drivers only load when their device is present
+    #   * Start <= 1               -> Boot/System load order, never touch
+    #   * not (Type & 48)          -> not a Win32 service
+    # Everything left over is set to Manual or Disabled unless it is on a keep
+    # list. Note the contrast with Nano, which deletes the keys outright - that
+    # leaves the SCM logging errors about missing services and breaks anything
+    # that declares a dependency on them. Writing Start=4 is the same effect
+    # with a working service record behind it.
+    Write-Log "Tuning services (winutil-style: run as little as possible)..."
+
+    # Load SYSTEM hive separately - service tuning is a standalone registry job
     reg load HKLM\zSYSTEM "$scratchDir\Windows\System32\config\SYSTEM" 2>&1 | Out-Null
+    if (-not (Test-Path 'HKLM:\zSYSTEM\ControlSet001\Services')) {
+        Write-Log "Could not load the offline SYSTEM hive - service tuning skipped" "WARN"
+        return
+    }
 
-    $servicesToRemove = @(
-        'Spooler',
-        'PrintNotify',
-        'Fax',
-        'RemoteRegistry',
-        'diagsvc',
-        'WerSvc',
-        'PcaSvc',
-        'MapsBroker',
-        'WalletService',
-        'BthAvctpSvc',
-        'BluetoothUserService',
-        'wuauserv',
-        'UsoSvc',
-        'WaaSMedicSvc'
+    # --- Start=2: must be running for boot -> logon -> desktop -> network -----
+    # Derived from the transitive DependOnService closure of the SCM's own hard
+    # requirements (DCOM, RPC, event log, profile service, task scheduler, ...),
+    # so nothing here has a hidden dependency on something we disable below.
+    [string[]]$keepAuto = @(
+        'AppXSvc',              # first logon registers the provisioned packages
+        'BrokerInfrastructure', # background-task infra, the shell depends on it
+        'CoreMessagingRegistrar',
+        'CryptSvc',             # catalog/cert validation: setup + winget need it
+        'DcomLaunch',
+        'Dhcp',
+        'Dnscache',
+        'EventLog',
+        'EventSystem',
+        'gpsvc',                # Group Policy Client, required at logon
+        'LSM',                  # Local Session Manager
+        'NetSetupSvc',          # NIC bring-up
+        'nsi',                  # Network Store Interface, AFD/Tcpip depend on it
+        'Power',
+        'ProfSvc',              # User Profile Service
+        'RpcEptMapper',
+        'RpcSs',
+        'SamSs',                # Security Accounts Manager
+        'Schedule',             # Task Scheduler - first-run tasks
+        'SENS',
+        'ShellHWDetection',     # drive letter / autorun enumeration
+        'StateRepository',      # Start menu + AppX state
+        'SystemEventsBroker',
+        'Themes',
+        'UserManager',
+        'Wcmsvc',               # Windows Connection Manager
+        'WinHttpAutoProxySvc',
+        'Winmgmt'               # WMI - the autounattend scripts query it
     )
 
-    foreach ($service in $servicesToRemove) {
-        Write-Log "Removing service: $service"
-        try {
-            & 'reg' 'delete' "HKLM\zSYSTEM\ControlSet001\Services\$service" /f 2>&1 | Out-Null
-        } catch {
-            Write-Log "Could not remove service $service : Registry key not found or error" "WARN"
+    # --- Start=3: startable on demand, but never resident --------------------
+    # Winutil's own convention: MapsBroker and StorSvc go Automatic -> Manual
+    # rather than Disabled, because things do still trigger them.
+    #
+    # The four dependency entries (BFE, iphlpsvc, LanmanWorkstation, Eaphost)
+    # are here because something in this list needs them: NcaSvc declares
+    # BFE + iphlpsvc, SessionEnv declares LanmanWorkstation, dot3svc declares
+    # Eaphost. Leaving those Disabled would make the dependent service
+    # unstartable the moment anything asked for it. Manual is free - the SCM
+    # will start them only as a dependency, so none of them are resident at
+    # boot, but the ones above them stay usable.
+    [string[]]$keepManual = @(
+        'W32Time',                     # clock sync (already Manual in stock)
+        'cbdhsvc',                     # clipboard: spins up only when you copy
+        'camsvc',                      # Content Access Manager
+        'DispBrokerDesktopSvc',        # resolution / DPI changes in Settings
+        'DoSvc',                       # Delivery Optimization, Store pulls on demand
+        'dot3svc',                     # wired 802.1X
+        'Eaphost',                     # ^ dependency of dot3svc (already stock-Manual)
+        'KeyIso',                      # ^ dependency of Eaphost (CNG key isolation, stock-Manual)
+        'FontCache',
+        'LanmanWorkstation',           # ^ dependency of SessionEnv: keeps SMB/UNC and
+                                       #   RDP re-enableable without running at boot
+        'MapsBroker',                  # winutil: Automatic -> Manual
+        'NcaSvc',                      # network connectivity indicator
+        'iphlpsvc',                    # ^ dependency of NcaSvc (stock-Auto -> Manual)
+        'BFE',                         # ^ dependency of NcaSvc (stock-Auto -> Manual)
+        'NlaSvc',
+        'netprofm',
+        'ClipSVC',                     # Store app licensing
+        'SessionEnv',                  # \
+        'TermService',                 #  | RDP - stock-off, but leave it startable
+        'UmRdpService',                # /
+        'sppsvc',                      # Software Protection / activation
+        'StorSvc',                     # winutil: Automatic -> Manual
+        'TextInputManagementService',  # IME / text input
+        'TrustedInstaller'             # Windows Modules Installer - servicing
+    )
+
+    $stats = @{ NonService = 0; Driver = 0; Auto = 0; Manual = 0; Disabled = 0 }
+    $entries = New-Object System.Collections.Generic.List[object]
+
+    foreach ($key in (Get-ChildItem -Path 'HKLM:\zSYSTEM\ControlSet001\Services' -ErrorAction SilentlyContinue)) {
+        $props      = Get-ItemProperty -Path $key.PSPath -ErrorAction SilentlyContinue
+        # StrictMode forbids touching properties that are not there, so probe
+        # the property bag instead of reading $props.Type directly.
+        $typeProp   = $props.PSObject.Properties['Type']
+        $startProp  = $props.PSObject.Properties['Start']
+        if (-not $typeProp -or -not $startProp) { $stats.NonService++; continue }
+
+        $typeValue = [int]$typeProp.Value
+        if (($typeValue -band 3) -ne 0)          { $stats.Driver++;     continue }  # kernel / fs driver
+        if (($typeValue -band 48) -eq 0)         { $stats.NonService++; continue }  # not 16|32: not a Win32 service
+        if ([int]$startProp.Value -le 1)         { $stats.Driver++;     continue }  # Boot / System load order
+
+        $entries.Add([pscustomobject]@{ Name = $key.PSChildName; Start = [int]$startProp.Value })
+    }
+
+    $autoBefore = @($entries | Where-Object { $_.Start -eq 2 }).Count
+
+    foreach ($entry in $entries) {
+        $target = if     ($keepAuto   -contains $entry.Name) { 2 }
+                  elseif ($keepManual -contains $entry.Name) { 3 }
+                  else                                       { 4 }
+
+        if (Set-ServiceStartup -Name $entry.Name -StartValue $target) {
+            switch ($target) {
+                2 { $stats.Auto++ }
+                3 { $stats.Manual++ }
+                4 { $stats.Disabled++ }
+            }
         }
     }
 
     reg unload HKLM\zSYSTEM 2>&1 | Out-Null
 
-    Write-Log "Services removed"
+    $autoAfter = $stats.Auto
+    Write-Log ("Service tuning complete: auto-start {0} -> {1}, manual {2}, disabled {3} (skipped {4} drivers / {5} non-service keys)" -f `
+        $autoBefore, $autoAfter, $stats.Manual, $stats.Disabled, $stats.Driver, $stats.NonService)
+    if ($autoAfter -gt 40) {
+        Write-Log "More than 40 auto-start services survived - check the keep lists" "WARN"
+    }
+}
+
+function Disable-BackgroundApps {
+    # Port of winutil's "Background Apps - Disable" plus its privacy/telemetry
+    # policy block. winutil is a live system and uses Set-ItemProperty on HKCU;
+    # here every HKCU value has to go into the Default user profile instead.
+    #
+    # Hive mapping matters: zNTUSER is Users\Default\ntuser.dat - the profile
+    # EVERY account created during OOBE is copied from, so a value written here
+    # reaches all users. zDEFAULT is the .DEFAULT service-account hive, which
+    # nobody who logs on ever reads - writing it would silently do nothing.
+    Write-Log "Disabling background apps and applying winutil privacy policies..."
+
+    # --- the single kill switch for all Store app background activity --------
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled' 'REG_DWORD' '1'
+
+    # --- HKCU half (-> zNTUSER) ---------------------------------------------
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo' 'Enabled' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\Windows\CurrentVersion\Privacy' 'TailoredExperiencesWithDiagnosticDataEnabled' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\Speech_OneCore\Settings\OnlineSpeechPrivacy' 'HasAccepted' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\Input\TIPC' 'Enabled' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\InputPersonalization' 'RestrictImplicitInkCollection' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\InputPersonalization' 'RestrictImplicitTextCollection' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\InputPersonalization\TrainedDataStore' 'HarvestContacts' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\Personalization\Settings' 'AcceptedPrivacyPolicy' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_TrackProgs' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zNTUSER\Software\Microsoft\Siuf\Rules' 'NumberOfSIUFInPeriod' 'REG_DWORD' '0'
+    Remove-RegistryValue  'HKLM\zNTUSER\Software\Microsoft\Siuf\Rules\PeriodInNanoSeconds'
+
+    # --- HKLM half (-> SOFTWARE / SYSTEM hives) ------------------------------
+    # Activity history: winutil leaves EnableActivityFeed at 1 and only zeroes
+    # Publish/Upload; we are after the smaller footprint, so turn it off too.
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\System' 'EnableActivityFeed' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\System' 'PublishUserActivities' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\System' 'UploadUserActivities' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection' 'AllowTelemetry' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\CloudContent' 'DisableWindowsConsumerFeatures' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\AppPrivacy' 'LetAppsRunInBackground' 'REG_DWORD' '2'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location' 'Value' 'REG_SZ' 'Deny'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows NT\CurrentVersion\Sensor\Overrides\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}' 'SensorPermissionState' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSYSTEM\Maps' 'AutoUpdateEnabled' 'REG_DWORD' '0'
+
+    # Machine-wide: opt every PowerShell host out of telemetry
+    Set-RegistryValue 'HKLM\zSYSTEM\ControlSet001\Control\Session Manager\Environment' 'POWERSHELL_TELEMETRY_OPTOUT' 'REG_SZ' '1'
+
+    Write-Log "Background apps disabled, privacy policies applied"
 }
 
 #---------[ Finalization Functions ]---------#
@@ -1579,7 +1930,7 @@ function Dismount-AndExport {
     Write-Log "Dismounting install.wim..."
     & dism /English /unmount-image "/mountdir:$scratchDir" /commit
 
-    $tempWim = "$nano11Dir\sources\install2.wim"
+    $tempWim = "$ultra11Dir\sources\install2.wim"
     $exported = $false
     if ($Compress -ne 'recovery') {
         $wimlib = Get-WimlibExe
@@ -1608,9 +1959,9 @@ function Dismount-AndExport {
 }
 
 function Process-BootImage {
-    Write-Log "Processing boot.wim (nano11 shrinking)..."
+    Write-Log "Processing boot.wim (ultra11 shrinking)..."
 
-    $bootWimPath = "$nano11Dir\sources\boot.wim"
+    $bootWimPath = "$ultra11Dir\sources\boot.wim"
 
     # Take ownership
     & takeown /F $bootWimPath /A 2>&1 | Out-Null
@@ -1619,7 +1970,7 @@ function Process-BootImage {
 
     # Export only index 2 (setup image)
     Write-Log "Exporting boot.wim index 2..."
-    $newBootWimPath = "$nano11Dir\sources\boot_new.wim"
+    $newBootWimPath = "$ultra11Dir\sources\boot_new.wim"
     & dism /English /Export-Image /SourceImageFile:$bootWimPath /SourceIndex:2 /DestinationImageFile:$newBootWimPath
 
     # Mount the new boot image
@@ -1672,7 +2023,7 @@ function Process-BootImage {
 
     # Replace original boot.wim with shrunk version
     Remove-Item -Path $bootWimPath -Force
-    $finalBootWimPath = "$nano11Dir\sources\boot_final.wim"
+    $finalBootWimPath = "$ultra11Dir\sources\boot_final.wim"
     & dism /English /Export-Image /SourceImageFile:$newBootWimPath /SourceIndex:1 /DestinationImageFile:$finalBootWimPath /Compress:max
     Remove-Item -Path $newBootWimPath -Force
     Rename-Item -Path $finalBootWimPath -NewName "boot.wim"
@@ -1682,17 +2033,44 @@ function Process-BootImage {
 
 function Convert-ToESD {
     Write-Log "Converting to ESD format for maximum compression..."
-    $esdPath = "$nano11Dir\sources\install.esd"
+    $esdPath = "$ultra11Dir\sources\install.esd"
     & dism /Export-Image /SourceImageFile:$wimFilePath /SourceIndex:1 /DestinationImageFile:$esdPath /Compress:recovery
     Remove-Item $wimFilePath -Force -ErrorAction SilentlyContinue
     Write-Log "ESD conversion complete"
+}
+
+function Slim-BootMedia {
+    # Both BCD stores on this media are `locale = en-US` and neither carries a
+    # font element, so bootmgr and the WinPE setup phase only ever resolve
+    # Latin glyphs. The CJK boot faces are ~15 MB of the built ISO across
+    # boot\fonts and efi\microsoft\boot\fonts. Latin faces are kept so there is
+    # always a fallback: wgl4 is bootmgr's base face, segoe* the ClearType
+    # fallback, segmono the monospace fallback.
+    Write-Log "Slimming boot media (removing non-Latin boot fonts)..."
+
+    $latinFaces = @('wgl4_boot.ttf', 'segoe_slboot.ttf', 'segoen_slboot.ttf', 'segmono_boot.ttf')
+
+    foreach ($fontDir in "$ultra11Dir\boot\fonts", "$ultra11Dir\efi\microsoft\boot\fonts") {
+        if (-not (Test-Path -LiteralPath $fontDir)) { continue }
+
+        $freed = [long]0
+        Get-ChildItem -LiteralPath $fontDir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notin $latinFaces } |
+            ForEach-Object {
+                $freed += $_.Length
+                Write-Log "Removing boot font: $($_.FullName)"
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+            }
+
+        Write-Log "$fontDir -> $([math]::Round($freed/1MB,1)) MB reclaimed"
+    }
 }
 
 function Clean-IsoRoot {
     Write-Log "Cleaning ISO root (keeping only essentials)..."
     
     $keepList = @("boot", "efi", "sources", "bootmgr", "bootmgr.efi", "setup.exe", "autounattend.xml")
-    Get-ChildItem -Path $nano11Dir | Where-Object { $_.Name -notin $keepList } | ForEach-Object {
+    Get-ChildItem -Path $ultra11Dir | Where-Object { $_.Name -notin $keepList } | ForEach-Object {
         Write-Log "Removing from ISO root: $($_.Name)"
         Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -1700,20 +2078,20 @@ function Clean-IsoRoot {
     Write-Log "ISO root cleaned"
 }
 
-function Create-NanoISO {
+function Create-UltraISO {
     Write-Log "Creating ISO image..."
 
-    # Copy autounattend-nano.xml as autounattend.xml to ISO root
-    $nanoAutoUnattend = Join-Path (Split-Path $PSScriptRoot -Parent) "autounattend-nano.xml"
-    if (Test-Path $nanoAutoUnattend) {
-        Copy-Item -Path $nanoAutoUnattend -Destination "$nano11Dir\autounattend.xml" -Force
-        Write-Log "Copied autounattend-nano.xml to ISO root as autounattend.xml"
+    # Copy autounattend-ultra.xml as autounattend.xml to ISO root
+    $ultraAutoUnattend = Join-Path (Split-Path $PSScriptRoot -Parent) "autounattend-ultra.xml"
+    if (Test-Path $ultraAutoUnattend) {
+        Copy-Item -Path $ultraAutoUnattend -Destination "$ultra11Dir\autounattend.xml" -Force
+        Write-Log "Copied autounattend-ultra.xml to ISO root as autounattend.xml"
     }
 
     # Verify boot files
     $bootFiles = @(
-        "$nano11Dir\boot\etfsboot.com",
-        "$nano11Dir\efi\microsoft\boot\efisys.bin"
+        "$ultra11Dir\boot\etfsboot.com",
+        "$ultra11Dir\efi\microsoft\boot\efisys.bin"
     )
     foreach ($bootFile in $bootFiles) {
         if (-not (Test-Path $bootFile)) {
@@ -1749,8 +2127,8 @@ function Create-NanoISO {
     Write-Log "Building bootable ISO..."
     try {
         & $OSCDIMG '-m' '-o' '-u2' '-udfver102' `
-            "-bootdata:2#p0,e,b$nano11Dir\boot\etfsboot.com#pEF,e,b$nano11Dir\efi\microsoft\boot\efisys.bin" `
-            $nano11Dir $outputISO
+            "-bootdata:2#p0,e,b$ultra11Dir\boot\etfsboot.com#pEF,e,b$ultra11Dir\efi\microsoft\boot\efisys.bin" `
+            $ultra11Dir $outputISO
         if ($LASTEXITCODE -ne 0) { throw "oscdimg failed with exit code $LASTEXITCODE" }
     } catch {
         if ($backISO -and (Test-Path -LiteralPath $backISO)) {
@@ -1805,7 +2183,7 @@ function Invoke-Cleanup {
     # Ensure image is unmounted
     & dism /English /unmount-image "/mountdir:$scratchDir" /discard 2>&1 | Out-Null
 
-    Remove-Item -Path $nano11Dir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path $ultra11Dir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $scratchDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path "$PSScriptRoot\oscdimg.exe" -Force -ErrorAction SilentlyContinue
     Remove-Item -Path "$PSScriptRoot\wimlib" -Recurse -Force -ErrorAction SilentlyContinue
@@ -1815,10 +2193,10 @@ function Invoke-Cleanup {
 
 #---------[ Main Execution ]---------#
 try {
-    Write-Log "=== Nano11 Headless Builder Started ===" "INFO"
+    Write-Log "=== Ultra11 Headless Builder Started ===" "INFO"
     Write-Log "Author: kelexine (https://github.com/kelexine)"
     Write-Log "Parameters: ISO=$ISO, INDEX=$INDEX, SCRATCH=$ScratchDisk, DEFENDER=$Defender"
-    Write-Log "WARNING: This creates the most minimal Windows 11 image - FOR TESTING ONLY!"
+    Write-Log "WARNING: absolute-minimum build - installs and boots, nothing else is guaranteed. VM TESTING ONLY!"
 
     Initialize-IsoSource
     Test-Prerequisites
@@ -1847,11 +2225,13 @@ try {
     Remove-BloatwareApps
     Remove-SystemPackages
     Remove-DefenderPackages
+    Remove-OptionalFeatures
     Remove-NativeImages
     Slim-DriverStore
     Reduce-Fonts
     Clean-InputMethods
     Remove-MiscellaneousFiles
+    Remove-UltraExtras
     Remove-EdgeAndOneDrive
     if ($PreserveWinRE) {
         Write-Log "Skipping WinRE removal (PreserveWinRE flag set)" "INFO"
@@ -1866,11 +2246,12 @@ try {
     Apply-RegistryTweaks
     Set-WindowsDefender
     Apply-PerformanceTweaks
+    Disable-BackgroundApps
     Remove-ScheduledTasks
     Unload-RegistryHives
 
-    # Service removal (separate registry operation)
-    Remove-Services
+    # Service tuning (separate registry operation - loads SYSTEM itself)
+    Tune-Services
 
     # WinSxS optimization
     Optimize-WinSxS
@@ -1880,15 +2261,16 @@ try {
     Dismount-AndExport
     Process-BootImage
     Convert-ToESD
+    Slim-BootMedia
     Clean-IsoRoot
-    Create-NanoISO
-    Write-BuildInfo -OutputPath "$PSScriptRoot\nano11-buildinfo.json"
+    Create-UltraISO
+    Write-BuildInfo -OutputPath "$PSScriptRoot\ultra11-buildinfo.json"
 
     # Cleanup
     Invoke-Cleanup
     Dismount-SourceIso
 
-    Write-Log "=== Nano11 Build Completed Successfully ===" "INFO"
+    Write-Log "=== ultra11 Build Completed Successfully ===" "INFO"
     Write-Log "Output: $outputISO"
     Write-Log "WARNING: This is AN EXTREMELY MINIMAL build - NOT for daily use!"
 

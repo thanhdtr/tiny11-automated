@@ -34,11 +34,6 @@
     Remove (default: Defender platform + Windows Security app uninstalled
     and files deleted - this script's historical behavior).
 
-.PARAMETER Apps
-    Comma-separated winutil app keys to install silently on first logon
-    (e.g. '7zip,chrome,vlc'), or the literal value 'winutil' to only bundle
-    the winutil tool (Desktop shortcut) without auto-installing anything.
-
 .PARAMETER OutputDir
     Custom folder for the finished ISO. Defaults to the folder of the source
     .iso file (file-path -ISO), or the script folder (drive-letter -ISO).
@@ -58,7 +53,7 @@
     .\tiny11coremaker-headless.ps1 -ISO E -INDEX 6 -SCRATCH D -SkipCleanup
     .\tiny11coremaker-headless.ps1 -ISO D:\ISOs\Win11_25H2_x64.iso -INDEX 6 -BackupDrivers
     .\tiny11coremaker-headless.ps1 -ISO E -INDEX 6 -Defender Disable
-    .\tiny11coremaker-headless.ps1 -ISO E -INDEX 6 -Apps '7zip,chrome,vlc'
+    .\tiny11coremaker-headless.ps1 -ISO E -INDEX 6
 
 .NOTES
     Original Author: ntdevlabs
@@ -100,9 +95,6 @@ param (
     [ValidateSet('Keep', 'Disable', 'Remove')]
     [string]$Defender = 'Remove',
 
-    [Parameter(Mandatory=$false, HelpMessage="Comma-separated winutil app keys to install on first logon (e.g. '7zip,chrome,vlc'), or 'winutil' to only bundle the tool")]
-    [string]$Apps = '',
-
     [Parameter(Mandatory=$false, HelpMessage="Custom folder for the finished ISO (default: next to the source .iso file, or the script folder for a drive letter)")]
     [string]$OutputDir = '',
 
@@ -141,9 +133,6 @@ if ($OutputDir) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $outputISO) | Out-Null
 }
 $logFile = "$PSScriptRoot\tiny11-core_$(Get-Date -Format yyyyMMdd_HHmmss).log"
-# Third-party app sources (-Apps) - only contacted when -Apps is used
-$appsCatalogUrl = 'https://raw.githubusercontent.com/Christitustech/winutil/main/config/applications.json'
-$winutilUrl = 'https://christitus.com/win'
 
 # Initialize admin identifiers for permission operations
 try {
@@ -283,113 +272,6 @@ function Add-BackupDrivers {
     $added = @($output | Where-Object { "$_" -match 'Installing driver package' }).Count
     if ($added -gt 0) { Write-Log "Staged $added driver package(s) into $TargetName" }
     else { Write-Log "No matching driver packages staged into $TargetName (all were skipped)." "WARN" }
-}
-
-function Test-AppsSelection {
-    # Validates -Apps keys against winutil's live catalog before any heavy work.
-    # Runs before the admin check so bad keys fail fast. 'winutil' is always valid.
-    if ([string]::IsNullOrWhiteSpace($Apps)) { return }
-    $keys = @($Apps -split '[,;]' | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
-    if ($keys.Count -eq 0) { return }
-    $toCheck = @($keys | Where-Object { $_ -ne 'winutil' })
-    if ($toCheck.Count -eq 0) {
-        Write-Log "Apps selection: winutil tool only"
-        return
-    }
-    $json = $null
-    try {
-        $json = (Invoke-WebRequest -Uri $appsCatalogUrl -UseBasicParsing -TimeoutSec 60).Content | ConvertFrom-Json
-    } catch {
-        Write-Log "Could not fetch winutil app catalog for validation ($_); continuing without key validation" "WARN"
-        return
-    }
-    $known = @($json.PSObject.Properties.Name)
-    $bad = @($toCheck | Where-Object { $known -notcontains $_ })
-    if ($bad.Count -gt 0) {
-        Write-Log "Unknown -Apps key(s): $($bad -join ', ')" "ERROR"
-        throw "Unknown -Apps key(s): $($bad -join ', '). Keys must come from winutil's applications.json (e.g. 7zip, chrome, vlc) or the literal value 'winutil'."
-    }
-    Write-Log "App selection validated: $($keys -join ', ')"
-}
-
-function Stage-ThirdPartyApps {
-    # Downloads winutil into the image and wires a silent first-logon install.
-    # Requires registry hives to be loaded (writes RunOnce) and the image mounted.
-    if ([string]::IsNullOrWhiteSpace($Apps)) { return }
-    $keys = @($Apps -split '[,;]' | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
-    if ($keys.Count -eq 0) { return }
-    $installKeys = @($keys | Where-Object { $_ -ne 'winutil' })
-
-    $stageDir = "$scratchDir\Windows\Tiny11"
-    New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
-
-    try {
-        Invoke-WebRequest -Uri $winutilUrl -OutFile "$stageDir\winutil.ps1" -UseBasicParsing -TimeoutSec 180
-    } catch {
-        throw "Failed to download winutil from $winutilUrl : $_"
-    }
-    Write-Log "Bundled winutil.ps1 into image ($stageDir)"
-
-    # Desktop launcher - also the recovery path if the auto-install fails
-    $desktopDir = "$scratchDir\Users\Public\Desktop"
-    if (Test-Path $desktopDir) {
-        Set-Content -LiteralPath "$desktopDir\winutil.cmd" -Encoding ASCII -Value `
-            "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%SystemRoot%\Tiny11\winutil.ps1`"`r`npause"
-        Write-Log "Added winutil.cmd launcher to Public Desktop"
-    }
-
-    if ($installKeys.Count -eq 0) {
-        Write-Log "Apps: winutil tool bundled (no auto-install requested)"
-        return
-    }
-
-    ConvertTo-Json -InputObject @($installKeys) -Depth 3 | Set-Content -LiteralPath "$stageDir\install-apps.json" -Encoding UTF8
-    Write-Log "App config staged: $($installKeys -join ', ')"
-
-    # First-logon runner (single-quoted here-string: no expansion at build time)
-    $runner = @'
-$logPath = 'C:\ProgramData\tiny11\apps.log'
-function Write-AppLog([string]$Message) {
-    try { Add-Content -Path $logPath -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message" } catch { }
-}
-function Test-InternetConnection {
-    foreach ($probe in @('http://www.msftconnecttest.com/connecttest.txt', 'http://connectivitycheck.gstatic.com/generate_204')) {
-        try {
-            $r = Invoke-WebRequest -Uri $probe -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
-            if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) { return $true }
-        } catch { }
-    }
-    return $false
-}
-try {
-    New-Item -ItemType Directory -Force -Path 'C:\ProgramData\tiny11' | Out-Null
-    Write-AppLog 'Third-party app install starting'
-    if (-not (Test-InternetConnection)) {
-        Write-AppLog 'No internet connection at logon - skipping third-party app install'
-        return
-    }
-    $dir = Join-Path $env:SystemRoot 'Tiny11'
-    $scriptPath = Join-Path $dir 'winutil.ps1'
-    $configPath = Join-Path $dir 'install-apps.json'
-    if (-not (Test-Path $scriptPath)) { throw "winutil.ps1 not found at $scriptPath" }
-    if (-not (Test-Path $configPath)) { throw "install-apps.json not found at $configPath" }
-    $source = Get-Content -LiteralPath $scriptPath -Raw
-    try {
-        & ([ScriptBlock]::Create($source)) -Config $configPath -Run -Noui
-    } catch {
-        Write-AppLog "winutil -Noui invocation failed ($($_.Exception.Message)); retrying without -Noui"
-        & ([ScriptBlock]::Create($source)) -Config $configPath -Run
-    }
-    Write-AppLog 'Third-party app install finished'
-} catch {
-    Write-AppLog "FAILED: $($_.Exception.Message)"
-}
-'@
-    Set-Content -LiteralPath "$stageDir\install-apps.ps1" -Value $runner -Encoding UTF8
-
-    # Runs silently at first logon (UAC is disabled in this image)
-    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' 'Tiny11Apps' 'REG_SZ' 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Windows\Tiny11\install-apps.ps1'
-    Write-Log "First-logon app install registered (RunOnce -> C:\Windows\Tiny11\install-apps.ps1)"
 }
 
 function Test-Prerequisites {
@@ -1788,11 +1670,10 @@ function Invoke-Cleanup {
 try {
     Write-Log "=== Tiny11 Core Headless Builder Started ===" "INFO"
     Write-Log "Author: kelexine (https://github.com/kelexine)"
-    Write-Log "Parameters: ISO=$ISO, INDEX=$INDEX, SCRATCH=$ScratchDisk, DEFENDER=$Defender, APPS=$Apps"
+    Write-Log "Parameters: ISO=$ISO, INDEX=$INDEX, SCRATCH=$ScratchDisk, DEFENDER=$Defender"
     Write-Log "WARNING: This creates a minimal Windows 11 Core image - NOT for daily use!" "INFO"
 
     Initialize-IsoSource
-    Test-AppsSelection
     Test-Prerequisites
     Export-BackupDrivers
     Initialize-Directories
@@ -1842,7 +1723,6 @@ try {
     Load-RegistryHives
     Apply-RegistryTweaks
     Set-WindowsDefender
-    Stage-ThirdPartyApps
     Apply-PerformanceTweaks
     Remove-ScheduledTasks
     Remove-NonEssentialServices

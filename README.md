@@ -5,13 +5,16 @@
 - ✨ **AI/Recall Removal**: Complete removal of Copilot, Recall, and AI Fabric (~220 MB saved)
 - 🛡️ **Enhanced Telemetry Blocking**: Stronger privacy protection with additional registry tweaks
 - 🎮 **VRAM Gaming Optimization**: Improved graphics performance through DirectX registry optimizations
-- ⚡ **Build-Specific Service Removal**: 4 services (Standard), 13 services (Core), 14 services (Nano)
+- ⚡ **Build-Specific Service Removal**: 4 services (Standard), 13 services (Core), 14 keys deleted (Nano), **203 of 255 Win32 services disabled (Ultra)**
 - 🚫 **Windows Update Binary Removal**: Core/Nano builds now remove WU binaries (~300 MB saved)
+- 🏁 **Ultra Variant**: absolute-minimum build - every service classified, `Start=2` cut from 63 to 28, winutil-style background-app and privacy policies baked in
 
 **Total Additional Savings:**
 - Standard: ~120 MB
 - Core: ~320 MB
 - Nano: ~320 MB
+- Ultra: ~750 MB beyond Nano (estimate - the build log reports the actual
+  reclaimed MB per step)
 
 ---
 
@@ -30,9 +33,6 @@ The only network traffic the build performs:
 2. Downloading this repository's scripts (GitHub)
 3. Downloading `oscdimg.exe` from Microsoft - only if the Windows ADK is not installed
 4. Storing results in **your own** repository (Actions artifacts / Releases)
-5. **Only when you opt in with `-Apps`**: winutil's script (`christitus.com/win`) and its
-   `applications.json` catalog (GitHub raw) are fetched at build time; at first logon winutil
-   uses **winget** to download the apps you selected (Microsoft + vendor package sources)
 
 ---
 
@@ -48,6 +48,10 @@ Perfect for beginners and automated deployments:
    - `Build Tiny11` → Standard trimmed Windows 11
    - `Build Tiny11 Core` → Ultra-minimal variant
    - `Build Nano11` → EXTREME minimal (VM only)
+
+   ⚫ **Ultra has no CI workflow yet** - build it locally with Option 2 below
+   (`run.ps1` picks it as variant 4, or invoke
+   `scripts\ultra11builder-headless.ps1` directly).
 4. Click **"Run workflow"** and configure:
    - Windows ISO URL
    - Edition (Home/Pro/Education)
@@ -61,8 +65,8 @@ Perfect for beginners and automated deployments:
 For advanced users and local builds:
 
 ```powershell
-# Fastest: one-liner bootstrap (downloads this repo, asks for your ISO, the
-# Windows Defender choice and which apps to preinstall, then builds)
+# Fastest: one-liner bootstrap (downloads this repo, asks for your ISO and the
+# Windows Defender choice, then builds)
 irm https://raw.githubusercontent.com/thanhdtr/tiny11-automated/main/run.ps1 | iex
 
 # Or run the builders yourself:
@@ -85,6 +89,9 @@ Set-ExecutionPolicy Bypass -Scope Process
 # Nano11 (EXTREME minimal, VM testing ONLY)
 .\scripts\nano11builder-headless.ps1 -ISO E -INDEX 1
 
+# Ultra11 (absolute minimum - fewest services running, VM ONLY)
+.\scripts\ultra11builder-headless.ps1 -ISO E -INDEX 1
+
 # With .NET 3.5 (Core variant only)
 .\scripts\tiny11coremaker-headless.ps1 -ISO E -INDEX 1 -ENABLE_DOTNET35
 
@@ -93,9 +100,6 @@ Set-ExecutionPolicy Bypass -Scope Process
 
 # Windows Defender: fully remove it - or -Defender Disable / -Defender Keep
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Defender Remove
-
-# Preinstall third-party apps silently at first logon (winutil catalog keys)
-.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Apps '7zip,chrome,vlc'
 ```
 
 **Output location**: `run.ps1` asks where to save the finished ISO: the **same folder as your
@@ -117,6 +121,7 @@ its ISO `tiny11-<variant>-<timestamp>.iso`.
     <th>🟢 Standard</th>
     <th>🟡 Core</th>
     <th>🔴 Nano</th>
+    <th>⚫ Ultra</th>
   </tr>
 </thead>
 <tbody>
@@ -125,21 +130,46 @@ its ISO `tiny11-<variant>-<timestamp>.iso`.
     <td>Daily use (with caution)</td>
     <td>Testing, disposable VMs</td>
     <td>VM testing ONLY</td>
+    <td>Absolute minimum, fewest services running. VM ONLY</td>
   </tr>
   <tr>
     <td><strong>ISO Size</strong></td>
     <td>~3.5-5.5GB</td>
     <td>~3-3.5GB</td>
     <td>~2.5GB</td>
+    <td>~2-2.5GB (target)</td>
   </tr>
   <tr>
     <td><strong>Bloatware Removal</strong></td>
     <td>✅ 40+ apps</td>
     <td>✅ 40+ apps</td>
     <td>✅ 50+ apps</td>
+    <td>✅ 50+ apps, Store, Terminal</td>
+  </tr>
+  <tr>
+    <td><strong>Services Running At Boot</strong></td>
+    <td>stock &minus; 4</td>
+    <td>stock &minus; 13</td>
+    <td>14 service keys deleted</td>
+    <td><strong>63 &rarr; 28 auto-start</strong><br>203 of 255 Win32 services disabled, 24 startable on demand</td>
+  </tr>
+  <tr>
+    <td><strong>Background Apps &amp; Privacy</strong></td>
+    <td>✅ Telemetry registry tweaks</td>
+    <td>✅ Telemetry registry tweaks</td>
+    <td>✅ Telemetry registry tweaks</td>
+    <td>✅ <code>GlobalUserDisabled</code> + full winutil policy block</td>
+  </tr>
+  <tr>
+    <td><strong>Optional Features</strong></td>
+    <td>❌ Untouched</td>
+    <td>❌ Untouched</td>
+    <td>❌ Untouched</td>
+    <td>✅ All enabled features removed (payload dropped from WinSxS)</td>
   </tr>
   <tr>
     <td><strong>Telemetry Disabled</strong></td>
+    <td>✅ Complete</td>
     <td>✅ Complete</td>
     <td>✅ Complete</td>
     <td>✅ Complete</td>
@@ -149,10 +179,12 @@ its ISO `tiny11-<variant>-<timestamp>.iso`.
     <td>✅ Full</td>
     <td>❌ Minimized</td>
     <td>❌ Minimized</td>
+    <td>❌ Minimized</td>
   </tr>
   <tr>
     <td><strong>Windows Recovery</strong></td>
     <td>✅ Intact</td>
+    <td>⚙️ Optional (removed by default, use <code>-PreserveWinRE</code>)</td>
     <td>⚙️ Optional (removed by default, use <code>-PreserveWinRE</code>)</td>
     <td>⚙️ Optional (removed by default, use <code>-PreserveWinRE</code>)</td>
   </tr>
@@ -161,10 +193,12 @@ its ISO `tiny11-<variant>-<timestamp>.iso`.
     <td>⚙️ Keep by default (<code>-Defender</code> Keep / Disable / Remove)</td>
     <td>⚙️ Remove by default (<code>-Defender</code> Keep / Disable / Remove)</td>
     <td>⚙️ Remove by default (<code>-Defender</code> Keep / Disable / Remove)</td>
+    <td>⚙️ Remove by default (<code>-Defender</code> Keep / Disable / Remove)</td>
   </tr>
   <tr>
     <td><strong>Serviceability</strong></td>
     <td>✅ Can add features/updates</td>
+    <td>❌ Cannot service</td>
     <td>❌ Cannot service</td>
     <td>❌ Cannot service</td>
   </tr>
@@ -173,17 +207,34 @@ its ISO `tiny11-<variant>-<timestamp>.iso`.
     <td>✅ Yes</td>
     <td>✅ Yes</td>
     <td>❌ No</td>
+    <td>❌ No (spooler, print stack and print drivers all gone)</td>
+  </tr>
+  <tr>
+    <td><strong>Audio</strong></td>
+    <td>✅ Yes</td>
+    <td>✅ Yes</td>
+    <td>✅ Yes</td>
+    <td>❌ No (Audiosrv / AudioEndpointBuilder disabled)</td>
+  </tr>
+  <tr>
+    <td><strong>Firewall</strong></td>
+    <td>✅ Yes</td>
+    <td>✅ Yes</td>
+    <td>✅ Yes</td>
+    <td>❌ Off (mpssvc + BFE disabled)</td>
   </tr>
   <tr>
     <td><strong>Basic Apps (Notepad, Paint)</strong></td>
     <td>✅ Included</td>
     <td>✅ Included</td>
     <td>❌ Removed</td>
+    <td>❌ Removed</td>
   </tr>
   <tr>
     <td><strong>Build Time</strong></td>
     <td>45-80 min</td>
     <td>30-45 min</td>
+    <td>&lt;40 min</td>
     <td>&lt;40 min</td>
   </tr>
 </tbody>
@@ -194,6 +245,134 @@ its ISO `tiny11-<variant>-<timestamp>.iso`.
 - **🟢 Standard**: Best for most users. Balanced bloat removal with system stability
 - **🟡 Core**: Perfect for development VMs, testing environments, disposable systems
 - **🔴 Nano**: Absolute minimal testing only. Expect broken features. VM use ONLY.
+- **⚫ Ultra**: You asked for the lightest possible image and nothing else. It installs
+  and reaches a desktop; assume everything else you forgot about is gone. See
+  [⚫ What Makes Ultra Different](#-what-makes-ultra-different) before building it.
+
+---
+
+## ⚫ What Makes Ultra Different
+
+Ultra is a **fourth, separate builder** - `nano11builder-headless.ps1` is untouched, so
+anyone relying on Nano gets exactly what they had before. Ultra starts from Nano's base
+and adds three things.
+
+### 1. Every service in the image is classified
+
+Nano works from a blocklist: it deletes 14 service keys outright, which leaves the
+Service Control Manager logging errors about records that no longer exist and breaks
+anything that declared a dependency on them.
+
+Ultra instead **walks all 678 service keys** in the image and decides each one from its
+own `Type` and `Start` values:
+
+| Rule | Action |
+|------|--------|
+| No `Type` / no `Start` value | skipped - these are Winsock, COM and `.NET` registration containers that live under `Services\` but are not services |
+| `Type & 3` (kernel / file-system driver) | **untouched** - boot and PnP safety beats a handful of spare drivers, and demand-start drivers only load when their device is present |
+| `Start <= 1` (Boot / System) | **untouched** - load-order critical |
+| Not (`Type & 48`) | skipped - not a Win32 service |
+| On the `keepAuto` list | `Start = 2` (Automatic) |
+| On the `keepManual` list | `Start = 3` (Manual) |
+| Everything else | `Start = 4` (Disabled) |
+
+Startup types are written as the `Start` `REG_DWORD` under `ControlSet001\Services\<name>` -
+which is exactly what `Set-Service -StartupType` writes on a live system. `Set-Service` and
+`sc.exe` cannot be used here because they talk to the Service Control Manager of the
+**running** OS, and nothing in a mounted image is running.
+
+**Measured against a stock 25H2 image** (the same source ISO this repo builds from):
+
+| | Before | After |
+|---|---:|---:|
+| Win32 services in image | 255 | 255 |
+| Auto-start (`Start=2`) | **63** | **28** |
+| Manual, startable on demand (`Start=3`) | 186 | 24 |
+| Disabled (`Start=4`) | 6 | **203** |
+| Never touched (drivers, containers) | 423 | 423 |
+
+The 28 that still auto-start are the **transitive `DependOnService` closure** of what the
+SCM actually needs to get from power-on to a desktop: DCOM, RPC, the event log, the
+profile service, the task scheduler, the cryptographic services, the network stack up to
+`Wcmsvc`/`Dhcp`/`Dnscache`, and `Winmgmt` because the autounattend scripts query WMI.
+
+The 24 in the Manual tier are things that should still be **startable** but must not be
+resident: `W32Time`, `cbdhsvc` (clipboard - spins up only when you copy), `FontCache`,
+`TrustedInstaller`, `TermService`/`SessionEnv`/`UmRdpService` (RDP), `StorSvc` and
+`MapsBroker` (winutil's own `Automatic → Manual` convention), and the dependency links
+`BFE`/`iphlpsvc` (needed by `NcaSvc`), `LanmanWorkstation` (needed by `SessionEnv`) and
+`Eaphost`/`KeyIso` (needed by `dot3svc`). Manual costs nothing - the SCM only starts
+them when something above them asks - but it keeps the dependents usable instead of
+silently unstartable.
+
+> **The keep set is verified dependency-closed.** Every dependency of a kept service that
+> is itself a Win32 service is also kept, transitively. This is checked mechanically
+> before the lists are considered final - it is what caught `SessionEnv → LanmanWorkstation`
+> and `NcaSvc → BFE` in the first place.
+
+### 2. winutil's background-app and privacy policies, ported offline
+
+`winutil` is a live system and uses `Set-ItemProperty` against `HKCU`. Here every HKCU
+value has to land in the **Default user profile** instead - `HKLM\zNTUSER` is
+`Users\Default\ntuser.dat`, the profile that every account created at OOBE is copied from.
+Writing `HKLM\zDEFAULT` would be wrong: that is the `.DEFAULT` service-account hive, which
+nobody who logs on ever reads.
+
+- `BackgroundAccessApplications\GlobalUserDisabled = 1` - winutil's single kill switch for
+  all Store app background activity
+- The privacy/telemetry policy block: activity history publish/upload off, telemetry = 0,
+  `DisableWindowsConsumerFeatures`, `DODownloadMode = 0`, `LetAppsRunInBackground = 2`,
+  location denied, advertising ID off, online speech off, ink/text harvesting off
+- **`SvcHostSplitThresholdInKB`** - winutil sets this to the machine's RAM so the SCM packs
+  service groups into fewer `svchost.exe` processes. We cannot read the target VM's RAM
+  from the build host, so a generous floor is baked in and a `RunOnce` recomputes the real
+  figure on first logon, when the hardware is known. Takes effect on reboot.
+
+### 3. Size cuts Nano does not make
+
+| Target | Est. saving | Why it is safe |
+|---|---:|---|
+| `helloface.inf` driver | **96 MB** | Windows Hello Face FoD package is already removed, so the driver would be an orphan |
+| Physical 802.11 drivers (Intel/Realtek/Atheros/Qualcomm) | **~197 MB** | A VM presents an emulated Ethernet adapter and cannot see an 802.11 radio. Wired, virtio, VMXNET and Hyper-V/VMware NIC drivers use different INF prefixes and are untouched |
+| `ntprint*` print support repository | **30 MB** | Nano's `prn*` glob misses this prefix; the print stack is removed anyway |
+| All enabled optional features | varies | Payload dropped from WinSxS too, not just the FoD. Allowlisted: `NetFx4-AdvSrvs`, `MediaPlayback`, `WCF-*`, `VirtualMachinePlatform`, `HypervisorPlatform`, `Microsoft-Windows-Subsystem-Linux` |
+| `SystemApps` leftovers (Edge DevTools, Recall/Copilot UI, AI fabric) | **48 MB** | Those packages are already removed by `Remove-SystemPackages` / `Remove-BloatwareApps` |
+| `migwiz`, IE `F12`, braille tables, `Speech_OneCore` | **83 MB** | `Windows\Speech` and the IE package are already removed |
+| Non-Latin boot fonts, both `boot\fonts` copies | **~30 MB** | Both BCD stores on the media are `locale = en-US` and carry **no font element**, so only Latin glyphs are ever resolved. `wgl4`/`segoe*`/`segmono` are kept as fallback |
+| Windows Store, Terminal, Xbox family, Tips, Cortana | ~250 MB | `StorePurchaseApp` was already removed, which left the Store a half-state anyway |
+
+**Deliberately not removed** even though they were measured: duplicate
+`Microsoft.WindowsAppRuntime.1.5/1.6/1.7` packages (~168 MB) are framework dependencies
+other packages pin to a specific minor version, and `.NET Framework` / `SysWOW64` are
+needed by PowerShell 5.1 itself.
+
+### ⚠️ What will NOT work
+
+The contract is: **it installs, it reaches a desktop, and as little as possible is
+running.** Nothing beyond that is guaranteed. Specifically:
+
+- ❌ **No firewall** - `mpssvc` and `BFE` are disabled. Fine for a NAT/host-only VM; do not
+  bridge this to a network you care about
+- ❌ **No audio** - `Audiosrv` / `AudioEndpointBuilder` disabled
+- ❌ **No printing** - spooler, print stack and print driver repository all removed
+- ❌ **No Windows Search indexer** - `WSearch` disabled (the taskbar search box is hidden
+  by the autounattend anyway)
+- ❌ **No SMB / UNC access** - `LanmanServer` disabled, `LanmanWorkstation` left Manual
+- ❌ **Clipboard does not work out of the box** - `cbdhsvc` is Manual, so no per-session
+  host is created until something starts it
+- ❌ **The network tray icon may show "no internet"** - `NcaSvc`/`BFE`/`iphlpsvc` are all
+  Manual rather than running
+- ❌ **No Windows Update, no Defender, no Notepad/Paint/Photos/Camera, no CJK input**
+- ❌ **Cannot service** the image afterwards - no component store to add features to
+
+**To restore any of these**, the switch is one registry value under
+`HKLM\SYSTEM\CurrentControlSet\Services\<name>`: set `Start` to `2` (Automatic) or `3`
+(Manual), then reboot. Nothing is deleted - unlike Nano, every service record still
+exists, which is the whole reason for writing `Start=4` instead of removing the key.
+
+The `keepAuto` and `keepManual` arrays at the top of `Tune-Services` in
+`scripts\ultra11builder-headless.ps1` are plain string lists - edit them and rebuild if
+you want a different floor.
 
 ---
 
@@ -211,9 +390,12 @@ tiny11-automated/
 ├── scripts/
 │   ├── tiny11maker-headless.ps1          # ✨ Automated Standard
 │   ├── tiny11coremaker-headless.ps1      # ✨ Automated Core
-│   └── nano11builder-headless.ps1        # ✨ Automated Nano
+│   ├── nano11builder-headless.ps1        # ✨ Automated Nano
+│   └── ultra11builder-headless.ps1       # ✨ Automated Ultra (service minimiser)
+├── run.ps1                     # One-line bootstrap + interactive variant picker
 ├── autounattend.xml            # OOBE bypass (Standard/Core)
 ├── autounattend-nano.xml       # OOBE bypass (Nano)
+├── autounattend-ultra.xml      # OOBE bypass (Ultra)
 ├── CONTRIBUTING.md             # Contributor guidelines
 ├── CODE_OF_CONDUCT.md          # Community standards
 ├── SECURITY.md                 # Security policy
@@ -235,7 +417,6 @@ tiny11-automated/
     [-SCRATCH <string>]        # Optional: Scratch disk (default: script directory)
     [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
     [-Defender <string>]       # Optional: Keep (Standard default), Disable or Remove (Core/Nano default)
-    [-Apps <string>]           # Optional: winutil app keys for first-logon install (e.g. "7zip,chrome") or "winutil"
     [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
     [-Compress <string>]       # Optional: max (default, fast multi-threaded) | fast | recovery (smallest - slow single-threaded)
     [-SkipCleanup]             # Optional: Keep temp files for debugging
@@ -258,7 +439,24 @@ tiny11-automated/
     [-SCRATCH <string>]        # Optional: Scratch disk
     [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
     [-Defender <string>]       # Optional: Keep, Disable or Remove (default: Remove)
-    [-Apps <string>]           # Optional: winutil app keys for first-logon install (e.g. "7zip,chrome") or "winutil"
+    [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
+    [-Compress <string>]       # Optional: max (default, fast multi-threaded) | fast | recovery (smallest - slow single-threaded)
+    [-SkipCleanup]             # Optional: Keep temp files
+    [-PreserveWinRE]           # Keep winre.wim intact (required for real hardware / 24H2+ to avoid 0x8007000B)
+```
+
+### Ultra Variant
+
+Same parameters as Nano (no `-ENABLE_DOTNET35`). See
+[⚫ What Makes Ultra Different](#-what-makes-ultra-different) first.
+
+```powershell
+.\ultra11builder-headless.ps1
+    -ISO <string>              # Drive letter of mounted ISO, a .iso file, or a folder containing one
+    -INDEX <int>               # Image index
+    [-SCRATCH <string>]        # Optional: Scratch disk
+    [-BackupDrivers]           # Optional: Back up this PC's drivers into host_drivers\ and add them to the image
+    [-Defender <string>]       # Optional: Keep, Disable or Remove (default: Remove)
     [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
     [-Compress <string>]       # Optional: max (default, fast multi-threaded) | fast | recovery (smallest - slow single-threaded)
     [-SkipCleanup]             # Optional: Keep temp files
@@ -279,6 +477,9 @@ tiny11-automated/
 
 # Nano build with WinRE preserved (real hardware use)
 .\scripts\nano11builder-headless.ps1 -ISO E -INDEX 1 -PreserveWinRE
+
+# Ultra build - absolute minimum, fewest services running (VM ONLY)
+.\scripts\ultra11builder-headless.ps1 -ISO E -INDEX 1
 
 # Custom scratch drive (useful for limited C:\ space)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -SCRATCH D
@@ -301,11 +502,6 @@ tiny11-automated/
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Defender Remove
 .\scripts\tiny11coremaker-headless.ps1 -ISO E -INDEX 6 -Defender Keep
 
-# Third-party apps via winutil: keys from applications.json, installed silently
-# at first logon (needs internet then). "winutil" alone only bundles the tool.
-.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Apps '7zip,chrome,vlc'
-.\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -Apps 'winutil'
-
 # Debug mode (keeps temporary files)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -SkipCleanup
 ```
@@ -314,8 +510,8 @@ tiny11-automated/
 
 ## 🛡️ Windows Defender Options (`-Defender`)
 
-All three builders accept `-Defender Keep|Disable|Remove`. `run.ps1` prompts with a
-numbered choice (Standard defaults to **Keep**, Core/Nano to **Remove**):
+All four builders accept `-Defender Keep|Disable|Remove`. `run.ps1` prompts with a
+numbered choice (Standard defaults to **Keep**, Core/Nano/Ultra to **Remove**):
 
 | Mode | What happens |
 |------|--------------|
@@ -325,26 +521,6 @@ numbered choice (Standard defaults to **Keep**, Core/Nano to **Remove**):
 
 After **Remove**, install a third-party AV before browsing. Getting Defender back means
 reinstalling the *Windows Defender Platform* optional feature or resetting Windows.
-
----
-
-## 📦 Third-Party Software (`-Apps`)
-
-`-Apps` stages [winutil](https://github.com/Christitustech/winutil) into the image:
-
-1. `winutil.ps1` is bundled into `C:\Windows\Tiny11\` plus a `winutil.cmd` launcher on
-   the Public Desktop (recovery path if the auto-install ever fails)
-2. Your key list is stored as `install-apps.json`
-3. A `RunOnce` entry silently installs the selected apps **at first logon** (UAC is
-   disabled in this image, so there is no prompt) and logs to `C:\ProgramData\tiny11\apps.log`.
-   The install **only runs when an internet connection is detected**: offline logons skip it
-   silently (the `winutil.cmd` launcher stays available for later)
-4. Keys are validated against winutil's live `applications.json` catalog at build time;
-   interactive `run.ps1` builds show a full scrollable picker
-   (Space = toggle, Enter = confirm, Esc = skip)
-
-Use `-Apps 'winutil'` to bundle the tool without auto-installing anything.
-Internet is required at first logon (winget downloads the chosen packages).
 
 ---
 
@@ -435,9 +611,20 @@ Applied unconditionally by every builder (no flag needed):
 - Steps Recorder
 - LA57 CPU compatibility layer
 - Language features (OCR, Speech, Handwriting)
-- Windows Defender (Core/Nano by default; any variant with `-Defender Remove`)
-- Printer drivers (Nano only)
-- Scanner/MFD drivers (Nano only)
+- Windows Defender (Core/Nano/Ultra by default; any variant with `-Defender Remove`)
+- Printer drivers (Nano/Ultra) - Ultra also drops the `ntprint*` support repository Nano's `prn*` glob misses
+- Scanner/MFD drivers (Nano/Ultra)
+
+**Ultra only** (in addition to everything above):
+
+- Every enabled optional feature, payload dropped from WinSxS (WCF, Work Folders,
+  Windows Media Player, XPS/Print-to-PDF, Search Engine Client, MSRDC, NetFx advanced)
+- Physical Wi-Fi drivers, Windows Hello Face driver, `helloface.inf` (~293 MB)
+- Windows Store, Windows Terminal, Xbox family, Tips, Cortana, Reading List
+- Edge DevTools Client, Recall/Copilot UI packages, AI Fabric
+- `migwiz` migration wizard, IE F12 developer tools, braille tables, OneCore Speech
+- Non-Latin boot fonts (both `boot\fonts` locations)
+- Background app activity for the Default user profile, plus the winutil privacy policy block
 
 ### ⚙️ Registry Optimizations Applied
 
@@ -477,7 +664,9 @@ Applied unconditionally by every builder (no flag needed):
 
 **Performance (NEW):**
 - VRAM allocation optimized for gaming
-- Non-essential services disabled (4-13 depending on variant)
+- Non-essential services disabled (4-13 depending on variant; **Ultra: 203 of 255
+  Win32 services set to `Start=4`, auto-start cut from 63 to 28** - see
+  [⚫ What Makes Ultra Different](#-what-makes-ultra-different))
 - Diagnostic services removed
 - Telemetry services disabled
 - UAC permanently disabled (`EnableLUA=0`) - always on
@@ -486,7 +675,7 @@ Applied unconditionally by every builder (no flag needed):
 
 **Update & Cloud:**
 - Windows Update disabled (can be manually enabled in Standard)
-- Windows Update binaries removed (Core/Nano - NON-SERVICEABLE)
+- Windows Update binaries removed (Core/Nano/Ultra - NON-SERVICEABLE)
 - OneDrive backup prompts disabled
 - Teams auto-install blocked
 - New Outlook installation blocked
@@ -608,13 +797,16 @@ preserve_winre:         # 🆕 Preserve winre.wim (real hardware / 24H2+ builds)
 | **Standard** | 5-15 min | 45-80 min | **50-95 min** | ~4-5GB |
 | **Core** | 5-15 min | 30-45 min | **35-60 min** | ~3-4GB |
 | **Nano** | 5-15 min | <40 min | **~45-55 min** | ~2-2.9GB |
+| **Ultra** | 5-15 min | <40 min | **~45-55 min** | ~2-2.5GB (target) |
 
-*Build times measured on GitHub Actions standard runners (2-core, 7GB RAM)*
+*Build times measured on GitHub Actions standard runners (2-core, 7GB RAM).
+Ultra size is a target until the first build completes - the log reports the
+actual MB reclaimed by each step.*
 
 **Factors affecting build time:**
 - ISO download speed
 - Number of apps to remove (more apps = longer compression)
-- WinSxS optimization (Core/Nano)
+- WinSxS optimization (Core/Nano/Ultra)
 - Runner performance
 - Concurrent builds
 
@@ -701,7 +893,7 @@ preserve_winre:         # 🆕 Preserve winre.wim (real hardware / 24H2+ builds)
    ```
 3. For printing issues: Don't use Nano variant
 4. For Windows Defender: Use Standard variant
-5. Rebuild with Standard variant if Core/Nano too aggressive
+5. Rebuild with Standard variant if Core/Nano/Ultra too aggressive
 
 </details>
 
@@ -742,21 +934,27 @@ Get-FileHash -Path "tiny11.iso" -Algorithm SHA256
    - Keep antivirus updated
    - Consider `-Defender Keep` for better security
 
-3. **UAC Disabled - always** (`EnableLUA=0` in every image)
+3. **⚫ Ultra: NO FIREWALL and NO DEFENDER** (`mpssvc` + `BFE` disabled, Defender
+   removed by default)
+   - Acceptable for a NAT / host-only VM; **do not bridge an Ultra VM to a network
+     you care about**, and never use it on real hardware
+   - This is the single biggest difference between Ultra and the other three variants
+
+4. **UAC Disabled - always** (`EnableLUA=0` in every image)
    - No elevation prompts: anything running as admin applies silently
    - Re-enable after install: `reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA /t REG_DWORD /d 1 /f` + reboot
 
-4. **Updates Disabled by Default**
+5. **Updates Disabled by Default**
    - Manually enable if needed: `services.msc` → Windows Update
    - No automatic security patches
    - Monitor security advisories manually
 
-5. **Privacy vs. Functionality Trade-off**
+6. **Privacy vs. Functionality Trade-off**
    - Telemetry disabled → Better privacy
    - Some features may not work without telemetry
    - Cloud features limited/disabled
 
-6. **Production Use NOT Recommended**
+7. **Production Use NOT Recommended**
    - Use for testing/development only
    - Not suitable for business-critical systems
    - Consider official Windows for production
