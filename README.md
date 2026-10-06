@@ -5,9 +5,9 @@
 - ✨ **AI/Recall Removal**: Complete removal of Copilot, Recall, and AI Fabric (~220 MB saved)
 - 🛡️ **Enhanced Telemetry Blocking**: Stronger privacy protection with additional registry tweaks
 - 🎮 **VRAM Gaming Optimization**: Improved graphics performance through DirectX registry optimizations
-- ⚡ **Build-Specific Service Removal**: 4 services (Standard), 13 services (Core), 14 keys deleted (Nano), **203 of 255 Win32 services disabled (Ultra)**
+- ⚡ **Build-Specific Service Removal**: 4 services (Standard), 13 services (Core), 14 keys deleted (Nano), **every service classified - 34 of 260 Win32 services disabled, 195 startable on demand (Ultra)**
 - 🚫 **Windows Update Binary Removal**: Core/Nano builds now remove WU binaries (~300 MB saved)
-- 🏁 **Ultra Variant**: absolute-minimum build - every service classified, `Start=2` cut from 63 to 28, winutil-style background-app and privacy policies baked in
+- 🏁 **Ultra Variant**: absolute-minimum build - every service classified, `Start=2` cut from 61 to 31 (stock-Manual and per-user templates kept startable, stock-Auto debloat targets disabled), winutil-style background-app and privacy policies baked in
 
 **Total Additional Savings:**
 - Standard: ~120 MB
@@ -151,7 +151,7 @@ its ISO `tiny11-<variant>-<timestamp>.iso`.
     <td>stock &minus; 4</td>
     <td>stock &minus; 13</td>
     <td>14 service keys deleted</td>
-    <td><strong>63 &rarr; 28 auto-start</strong><br>203 of 255 Win32 services disabled, 24 startable on demand</td>
+    <td><strong>61 &rarr; 31 auto-start</strong><br>34 of 260 Win32 services disabled, 195 startable on demand (stock-Manual + per-user templates kept)</td>
   </tr>
   <tr>
     <td><strong>Background Apps &amp; Privacy</strong></td>
@@ -184,9 +184,9 @@ its ISO `tiny11-<variant>-<timestamp>.iso`.
   <tr>
     <td><strong>Windows Recovery</strong></td>
     <td>✅ Intact</td>
-    <td>⚙️ Optional (removed by default, use <code>-PreserveWinRE</code>)</td>
-    <td>⚙️ Optional (removed by default, use <code>-PreserveWinRE</code>)</td>
-    <td>⚙️ Optional (removed by default, use <code>-PreserveWinRE</code>)</td>
+    <td>⚙️ Removed by default - install fails ~15% without <code>-PreserveWinRE</code></td>
+    <td>⚙️ Removed by default - install fails ~15% without <code>-PreserveWinRE</code></td>
+    <td>⚙️ Removed by default - install fails ~15% without <code>-PreserveWinRE</code></td>
   </tr>
   <tr>
     <td><strong>Windows Defender</strong></td>
@@ -263,8 +263,8 @@ Nano works from a blocklist: it deletes 14 service keys outright, which leaves t
 Service Control Manager logging errors about records that no longer exist and breaks
 anything that declared a dependency on them.
 
-Ultra instead **walks all 678 service keys** in the image and decides each one from its
-own `Type` and `Start` values:
+Ultra instead **walks every service key in the image** (697 keys on the stock source)
+and decides each one from its own `Type` and `Start` values:
 
 | Rule | Action |
 |------|--------|
@@ -274,7 +274,10 @@ own `Type` and `Start` values:
 | Not (`Type & 48`) | skipped - not a Win32 service |
 | On the `keepAuto` list | `Start = 2` (Automatic) |
 | On the `keepManual` list | `Start = 3` (Manual) |
-| Everything else | `Start = 4` (Disabled) |
+| Already `Start = 4` in the image | **left off** - stock-disabled services, plus everything an earlier pass in this build disabled on purpose (Defender, `wuauserv`, `dmwappushservice`); those writers run *before* service tuning, so the value read here is already 4 and must not be resurrected |
+| `Type & 0x40` (per-user service template) | **kept at its stock `Start`** - the 24 templates (`UnistoreSvc`, `ConsentUxUserSvc`, `CredentialEnrollmentManagerUserSvc`, `CDPUserSvc`, `WpnUserService`, ...) are never run in session 0; the SCM clones one instance per logon. Disabling them strips the OOBE user's instances and is what made the region/keyboard XAML pages report "Something went wrong" |
+| Stock `Start = 3` (stock-Manual) | `Start = 3` (Manual) - demand-start costs nothing at boot, but lets setup *start* them on demand (`TokenBroker`, `wlidsvc`, `WlanSvc`, `Appinfo`, `NgcSvc`, `DsmSvc`, `fdPHost`, `SharedAccess`, ...). Disabling these is what hung setup after the region and keyboard pages were skipped: SCM refuses with error 1058 and the page waits forever |
+| Everything else (stock-Auto, not on `keepAuto`) | `Start = 4` (Disabled) - the debloat win: `DiagTrack`, `WSearch`, `SysMain`, `Spooler`, `mpssvc`, `Audiosrv`, `WpnService`, `CDPSvc`, `wscsvc`, `edgeupdate`, ... |
 
 Startup types are written as the `Start` `REG_DWORD` under `ControlSet001\Services\<name>` -
 which is exactly what `Set-Service -StartupType` writes on a live system. `Set-Service` and
@@ -285,25 +288,50 @@ which is exactly what `Set-Service -StartupType` writes on a live system. `Set-S
 
 | | Before | After |
 |---|---:|---:|
-| Win32 services in image | 255 | 255 |
-| Auto-start (`Start=2`) | **63** | **28** |
-| Manual, startable on demand (`Start=3`) | 186 | 24 |
-| Disabled (`Start=4`) | 6 | **203** |
-| Never touched (drivers, containers) | 423 | 423 |
+| Win32 services classified | 262 | 260 |
+| Auto-start (`Start=2`) | **61** | **31** |
+| Manual, startable on demand (`Start=3`) | 185 | **195** |
+| Disabled (`Start=4`) | 16 (only 10 in the raw stock image - the rest are the explicit Defender/WU writes) | **34** |
+| Never touched (drivers, containers) | 433 | 432 |
 
-The 28 that still auto-start are the **transitive `DependOnService` closure** of what the
+*(Measured by the builder's own log on build #4: `auto-start 61 -> 31, manual 195,
+disabled 34 (24 per-user templates kept at stock Start)`, and spot-checked against the
+shipped ISO's hive. "Before" is the stock source image minus the two keys
+`Apply-RegistryTweaks` deletes outright (`UsoSvc`, `WaaSMedicSvc`; raw stock has 264
+qualifying services) with this build's explicit Defender/WU/dmwappush disables already
+applied - not the raw stock image, which ships only 10 disabled Win32 services. The
+262 -> 260 delta is two service keys component removal takes with it before tuning
+runs: `ssh-agent` (stock-disabled) and `workfolderssvc` (the Work Folders feature);
+component removal also drops the driver key `smbdirect`, which is why the "never
+touched" row goes 433 -> 432.)*
+
+The 31 that still auto-start are the **transitive `DependOnService` closure** of what the
 SCM actually needs to get from power-on to a desktop: DCOM, RPC, the event log, the
 profile service, the task scheduler, the cryptographic services, the network stack up to
-`Wcmsvc`/`Dhcp`/`Dnscache`, and `Winmgmt` because the autounattend scripts query WMI.
+`Wcmsvc`/`Dhcp`/`Dnscache`, and `Winmgmt` because the autounattend scripts query WMI -
+plus the three per-user service templates stock ships as Automatic (`CDPUserSvc`,
+`webthreatdefusersvc`, `WpnUserService`; the fourth, `cbdhsvc`, is moved to Manual by
+`keepManual` so the clipboard only spins up when you copy).
 
-The 24 in the Manual tier are things that should still be **startable** but must not be
-resident: `W32Time`, `cbdhsvc` (clipboard - spins up only when you copy), `FontCache`,
-`TrustedInstaller`, `TermService`/`SessionEnv`/`UmRdpService` (RDP), `StorSvc` and
-`MapsBroker` (winutil's own `Automatic → Manual` convention), and the dependency links
-`BFE`/`iphlpsvc` (needed by `NcaSvc`), `LanmanWorkstation` (needed by `SessionEnv`) and
-`Eaphost`/`KeyIso` (needed by `dot3svc`). Manual costs nothing - the SCM only starts
-them when something above them asks - but it keeps the dependents usable instead of
-silently unstartable.
+The 195 in the Manual tier are almost all of Windows' stock-Manual services, kept at
+their stock value: `TokenBroker`, `wlidsvc` (Microsoft account sign-in), `WlanSvc`,
+`Appinfo`, `NgcSvc` (Windows Hello), `lfsvc`, `DsmSvc`, `DeviceAssociationService`,
+`fdPHost`, `RasMan`, `lmhosts`, `SharedAccess`, `cloudidsvc`, `wisvc`, ... plus the
+curated `keepManual` extras (`W32Time`, `cbdhsvc` clipboard, `TrustedInstaller`,
+RDP's `TermService`/`SessionEnv`/`UmRdpService`, `StorSvc`/`MapsBroker` from winutil's
+own `Automatic → Manual` convention, and the dependency links `BFE`/`iphlpsvc` for
+`NcaSvc`, `LanmanWorkstation` for `SessionEnv`, `Eaphost`/`KeyIso` for `dot3svc`).
+Manual costs nothing at boot - the SCM starts them only when something asks - but it is
+the difference between a setup page that can request a service on demand and one that
+hangs forever on error 1058.
+
+The 34 disabled are the debloat win and are all stock-**Auto** services this build
+deliberately does not run - `DiagTrack`, `WSearch`, `SysMain`, `Spooler`, `mpssvc`,
+`Audiosrv`, `WpnService`, `CDPSvc`, `wscsvc`, `edgeupdate`, `DPS`, `LanmanServer` -
+plus the explicit Defender/WU/dmwappush disables. All 24 per-user service templates
+(`UnistoreSvc`, `ConsentUxUserSvc`, `CredentialEnrollmentManagerUserSvc`, `CDPUserSvc`,
+`WpnUserService`, ...) keep their stock `Start` value: they never run in session 0, the
+SCM clones one instance per logon, and disabling them is what broke the OOBE XAML pages.
 
 > **The keep set is verified dependency-closed.** Every dependency of a kept service that
 > is itself a Win32 service is also kept, transitively. This is checked mechanically
@@ -427,7 +455,7 @@ tiny11-automated/
 ```powershell
 .\tiny11coremaker-headless.ps1
     [-ENABLE_DOTNET35]         # Enable .NET Framework 3.5 support
-    [-PreserveWinRE]           # Keep winre.wim intact (required for real hardware / 24H2+ to avoid 0x8007000B)
+    [-PreserveWinRE]           # Keep winre.wim intact (REQUIRED for any install - without it setup dies ~15% with 0x8007000B, issue #95)
 ```
 
 ### Nano Variant
@@ -442,7 +470,7 @@ tiny11-automated/
     [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
     [-Compress <string>]       # Optional: max (default, fast multi-threaded) | fast | recovery (smallest - slow single-threaded)
     [-SkipCleanup]             # Optional: Keep temp files
-    [-PreserveWinRE]           # Keep winre.wim intact (required for real hardware / 24H2+ to avoid 0x8007000B)
+    [-PreserveWinRE]           # Keep winre.wim intact (REQUIRED for any install - without it setup dies ~15% with 0x8007000B, issue #95)
 ```
 
 ### Ultra Variant
@@ -460,7 +488,7 @@ Same parameters as Nano (no `-ENABLE_DOTNET35`). See
     [-OutputDir <string>]      # Optional: Custom folder for the finished ISO (default: next to the source .iso)
     [-Compress <string>]       # Optional: max (default, fast multi-threaded) | fast | recovery (smallest - slow single-threaded)
     [-SkipCleanup]             # Optional: Keep temp files
-    [-PreserveWinRE]           # Keep winre.wim intact (required for real hardware / 24H2+ to avoid 0x8007000B)
+    [-PreserveWinRE]           # Keep winre.wim intact (REQUIRED for any install - without it setup dies ~15% with 0x8007000B, issue #95)
 ```
 
 ### Examples
@@ -472,14 +500,15 @@ Same parameters as Nano (no `-ENABLE_DOTNET35`). See
 # Professional Edition Core with .NET 3.5
 .\scripts\tiny11coremaker-headless.ps1 -ISO E -INDEX 6 -ENABLE_DOTNET35
 
-# Core build targeting real hardware (preserves WinRE to avoid 0x8007000B on 24H2/25H2)
+# Core build (preserves WinRE - required, otherwise setup dies ~15% with 0x8007000B)
 .\scripts\tiny11coremaker-headless.ps1 -ISO E -INDEX 6 -PreserveWinRE
 
-# Nano build with WinRE preserved (real hardware use)
+# Nano build with WinRE preserved (same 15% install failure without it)
 .\scripts\nano11builder-headless.ps1 -ISO E -INDEX 1 -PreserveWinRE
 
 # Ultra build - absolute minimum, fewest services running (VM ONLY)
-.\scripts\ultra11builder-headless.ps1 -ISO E -INDEX 1
+# -PreserveWinRE is required: without it setup dies ~15% into the install
+.\scripts\ultra11builder-headless.ps1 -ISO E -INDEX 1 -PreserveWinRE
 
 # Custom scratch drive (useful for limited C:\ space)
 .\scripts\tiny11maker-headless.ps1 -ISO E -INDEX 1 -SCRATCH D
@@ -664,8 +693,8 @@ Applied unconditionally by every builder (no flag needed):
 
 **Performance (NEW):**
 - VRAM allocation optimized for gaming
-- Non-essential services disabled (4-13 depending on variant; **Ultra: 203 of 255
-  Win32 services set to `Start=4`, auto-start cut from 63 to 28** - see
+- Non-essential services disabled (4-13 depending on variant; **Ultra: 34 of 260
+  Win32 services set to `Start=4`, auto-start cut from 61 to 31** - see
   [⚫ What Makes Ultra Different](#-what-makes-ultra-different))
 - Diagnostic services removed
 - Telemetry services disabled
@@ -898,6 +927,42 @@ actual MB reclaimed by each step.*
 </details>
 
 <details>
+<summary><strong>Install fails around the 15% mark (0x8007000B)</strong></summary>
+
+**Problem**: Setup dies near 15% (early in "Installing Windows") on EFI/VM installs
+when `winre.wim` was stripped from `Recovery\WinREAgent` (issue #95)
+
+**Solutions:**
+1. Rebuild with `-PreserveWinRE` - required for **any** install target (VM or real
+   hardware), not just real hardware
+2. `run.ps1` prompts for this automatically for Core/Nano/Ultra
+
+</details>
+
+<details>
+<summary><strong>OOBE region/keyboard pages say "Something went wrong", setup hangs after skipping them</strong></summary>
+
+**Problem**: On Ultra, `ooberegion` and `oobekeyboard` error out; skipping both lets
+setup continue a little further and then freeze.
+
+**Cause**: service tuning used to set every service outside the keep lists to
+`Start = 4` - including all 24 per-user service templates (the OOBE user loses
+`UnistoreSvc`/`ConsentUxUserSvc`/`CredentialEnrollmentManagerUserSvc`, so the XAML
+pages fail) and ~170 stock-Manual services setup later requests on demand (SCM
+answers error 1058 and the page hangs). Fixed in `Tune-Services`: keep lists win,
+already-`Start=4` stays off, per-user templates and stock-Manual services keep their
+stock value, only stock-Auto debloat targets are disabled.
+
+**If you still see it:**
+1. Confirm the ISO was built from a commit containing the classification fix
+   (build log line: `auto-start 61 -> 31, manual 195, disabled 34 (24 per-user
+   templates kept at stock Start...)`)
+2. Rebuild with `-PreserveWinRE` (a broken WinRE also aborts setup early)
+3. Capture the exact error text/code from the failing page
+
+</details>
+
+<details>
 <summary><strong>"Checksums don't match"</strong></summary>
 
 **Problem**: Downloaded ISO checksum verification fails
@@ -934,8 +999,9 @@ Get-FileHash -Path "tiny11.iso" -Algorithm SHA256
    - Keep antivirus updated
    - Consider `-Defender Keep` for better security
 
-3. **⚫ Ultra: NO FIREWALL and NO DEFENDER** (`mpssvc` + `BFE` disabled, Defender
-   removed by default)
+3. **⚫ Ultra: NO FIREWALL and NO DEFENDER** (`mpssvc` Disabled, Defender
+   removed by default; the Base Filtering Engine `BFE` stays Manual/startable but
+   nothing runs without the firewall service)
    - Acceptable for a NAT / host-only VM; **do not bridge an Ultra VM to a network
      you care about**, and never use it on real hardware
    - This is the single biggest difference between Ultra and the other three variants
