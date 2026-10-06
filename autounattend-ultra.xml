@@ -33,6 +33,18 @@
 	<settings pass="specialize">
 		<component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
 			<ComputerName>ultra11</ComputerName>
+			<!-- Timezone up front: Win11 OOBE has no timezone page and relies on
+			     geolocation afterwards; if that never runs the clock would sit on
+			     the image default (UTC) instead of the local time. -->
+			<TimeZone>SE Asia Standard Time</TimeZone>
+		</component>
+		<!-- Pin input/locale so the OOBE region/keyboard pages are not the only
+		     thing that establishes a keyboard layout and user locale. -->
+		<component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+			<InputLocale>en-US</InputLocale>
+			<SystemLocale>en-US</SystemLocale>
+			<UILanguage>en-US</UILanguage>
+			<UserLocale>en-US</UserLocale>
 		</component>
 		<component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
 			<RunSynchronous>
@@ -69,20 +81,20 @@
 					<PlainText>true</PlainText>
 				</AdministratorPassword>
 			</UserAccounts>
-			<AutoLogon>
-				<Username>Administrator</Username>
-				<Enabled>true</Enabled>
-				<LogonCount>1</LogonCount>
-				<Password>
-					<Value></Value>
-					<PlainText>true</PlainText>
-				</Password>
-			</AutoLogon>
+			<!-- AutoLogon removed on purpose: it auto-signed into the built-in
+			     Administrator after OOBE, which (a) meant no account was ever
+			     created interactively and (b) would hijack the first reboot away
+			     from the account the user creates now. UserAccounts above stays
+			     as a fallback (built-in Administrator still exists). -->
 			<OOBE>
 				<ProtectYourPC>3</ProtectYourPC>
 				<HideEULAPage>true</HideEULAPage>
 				<HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
-				<HideOnlineAccountScreens>false</HideOnlineAccountScreens>
+				<!-- true = OOBE shows "Who's going to use this PC?" (local account
+			     creation) instead of the Microsoft account sign-in. Together
+			     with BypassNRO=1 (builder) the network page also offers
+			     "I don't have internet" -> "Continue with limited setup". -->
+				<HideOnlineAccountScreens>true</HideOnlineAccountScreens>
 			</OOBE>
 			<FirstLogonCommands>
 				<SynchronousCommand wcm:action="add">
