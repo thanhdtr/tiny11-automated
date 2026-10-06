@@ -920,7 +920,10 @@ function Reduce-Fonts {
     $fontsPath = "$scratchDir\Windows\Fonts"
     if (Test-Path $fontsPath) {
         # Keep essential fonts, remove the rest
-        Get-ChildItem -Path $fontsPath -Exclude "segoe*.*", "tahoma*.*", "marlett.ttf", "8541oem.fon", "segui*.*", "consol*.*", "lucon*.*", "calibri*.*", "arial*.*", "times*.*", "cou*.*", "8*.*" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        # micross.ttf (Microsoft Sans Serif) and segmdl2.ttf (Segoe MDL2 Assets)
+        # are referenced by name from the font registry; stock ships both and
+        # legacy/OOBE UI that asks for them must not find a dangling entry.
+        Get-ChildItem -Path $fontsPath -Exclude "segoe*.*", "tahoma*.*", "marlett.ttf", "8541oem.fon", "segui*.*", "consol*.*", "lucon*.*", "calibri*.*", "arial*.*", "times*.*", "cou*.*", "8*.*", "micross.ttf", "segmdl2.ttf" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         
         # Remove CJK fonts explicitly
         Get-ChildItem -Path $fontsPath -Include "mingli*", "msjh*", "msyh*", "malgun*", "meiryo*", "yugoth*", "segoeuihistoric.ttf" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -1877,12 +1880,21 @@ function Tune-Services {
     #     and demand-start drivers only load when their device is present
     #   * Start <= 1               -> Boot/System load order, never touch
     #   * not (Type & 48)          -> not a Win32 service
-    # Everything left over is set to Manual or Disabled unless it is on a keep
-    # list. Note the contrast with Nano, which deletes the keys outright - that
+    # Everything left over is classified (see the loop below): keep lists win,
+    # anything already Start=4 in the image stays off (preserves the explicit
+    # Defender/WU/dmwappush disables written earlier in this build), per-user
+    # service templates (Type & 0x40) and stock-Manual services keep their stock
+    # Start value, and only stock-Auto services outside the keep lists are
+    # disabled - that last group is the debloat win. The first Ultra revision
+    # blanket-disabled everything not on a keep list, which flipped 199 stock
+    # services (TokenBroker, wlidsvc, WlanSvc, ... and all 24 per-user templates)
+    # to Start=4 and broke OOBE: the XAML pages lost their per-user service
+    # instances and setup hung requesting demand-start services that can never
+    # start. Note the contrast with Nano, which deletes the keys outright - that
     # leaves the SCM logging errors about missing services and breaks anything
     # that declares a dependency on them. Writing Start=4 is the same effect
     # with a working service record behind it.
-    Write-Log "Tuning services (winutil-style: run as little as possible)..."
+    Write-Log "Tuning services (run as little as possible, stock-Manual/OOBE-safe)..."
 
     # Load SYSTEM hive separately - service tuning is a standalone registry job.
     # No stderr redirection (rationale in Set-RegistryValue): with it, a rejected
@@ -1968,7 +1980,7 @@ function Tune-Services {
         'TrustedInstaller'             # Windows Modules Installer - servicing
     )
 
-    $stats = @{ NonService = 0; Driver = 0; Auto = 0; Manual = 0; Disabled = 0 }
+    $stats = @{ NonService = 0; Driver = 0; Auto = 0; Manual = 0; Disabled = 0; UserTemplates = 0 }
     $entries = New-Object System.Collections.Generic.List[object]
 
     # Get-ChildItem hands back live Microsoft.Win32.RegistryKey objects, each
@@ -1992,7 +2004,7 @@ function Tune-Services {
             if (($typeValue -band 48) -eq 0)         { $stats.NonService++; continue }  # not 16|32: not a Win32 service
             if ([int]$startProp.Value -le 1)         { $stats.Driver++;     continue }  # Boot / System load order
 
-            $entries.Add([pscustomobject]@{ Name = $key.PSChildName; Start = [int]$startProp.Value })
+            $entries.Add([pscustomobject]@{ Name = $key.PSChildName; Start = [int]$startProp.Value; Type = $typeValue })
         } finally {
             $keyBase = $key.PSObject.BaseObject
             if ($keyBase -is [IDisposable]) { try { $keyBase.Dispose() } catch { } }
@@ -2006,9 +2018,40 @@ function Tune-Services {
     $autoBefore = @($entries | Where-Object { $_.Start -eq 2 }).Count
 
     foreach ($entry in $entries) {
+        # Classification, in order - this is the OOBE fix, so the precedence
+        # matters and is spelled out:
+        #   1. keepAuto/keepManual   -> curated lists win, as always
+        #   2. Start == 4            -> already off in the image. Either stock
+        #      ships it off (~10 services) or an EARLIER pass in this build
+        #      deliberately disabled it (Set-WindowsDefender, the wuauserv and
+        #      dmwappushservice writes, RunOnce post-OOBE WU kill). Those
+        #      writers all run BEFORE Tune-Services, so by the time we read the
+        #      value it is 4 and we must not resurrect it.
+        #   3. Type & 0x40           -> per-user service TEMPLATE (exactly the 24
+        #      known ones: UnistoreSvc, ConsentUxUserSvc, CDPUserSvc,
+        #      CredentialEnrollmentManagerUserSvc, WpnUserService, ...). Templates
+        #      never run in session 0; SCM clones one instance per logged-on user.
+        #      Disabling them is what broke the XAML OOBE pages ("Something went
+        #      wrong" on region/keyboard): the pages run as the OOBE user and lose
+        #      Unistore/Consent/Credential/CDP instances. Keep the stock value.
+        #   4. stock Start == 3      -> stock-Manual stays Manual. Demand-start
+        #      costs NOTHING at boot (they are not running unless requested) but
+        #      lets setup start them on demand - TokenBroker, wlidsvc, WlanSvc,
+        #      Appinfo, NgcSvc, lfsvc, DsmSvc, DeviceAssociationService, fdPHost,
+        #      RasMan, lmhosts, SharedAccess, cloudidsvc, wisvc, ... Disabling
+        #      these is what made setup freeze: pages request them, SCM says
+        #      error 1058 "cannot be started", and the page hangs.
+        #   5. else                   -> stock-Auto we deliberately do not run:
+        #      the debloat win. DiagTrack, WSearch, SysMain, Spooler, mpssvc,
+        #      Audiosrv, WpnService, CDPSvc, wscsvc, edgeupdate, ... stay off.
         $target = if     ($keepAuto   -contains $entry.Name) { 2 }
                   elseif ($keepManual -contains $entry.Name) { 3 }
+                  elseif ([int]$entry.Start -eq 4)           { 4 }
+                  elseif (($entry.Type -band 64) -ne 0)      { [int]$entry.Start }
+                  elseif ([int]$entry.Start -eq 3)           { 3 }
                   else                                       { 4 }
+
+        if (($entry.Type -band 64) -ne 0) { $stats.UserTemplates++ }
 
         if (Set-ServiceStartup -Name $entry.Name -StartValue $target) {
             switch ($target) {
@@ -2029,8 +2072,8 @@ function Tune-Services {
     }
 
     $autoAfter = $stats.Auto
-    Write-Log ("Service tuning complete: auto-start {0} -> {1}, manual {2}, disabled {3} (skipped {4} drivers / {5} non-service keys)" -f `
-        $autoBefore, $autoAfter, $stats.Manual, $stats.Disabled, $stats.Driver, $stats.NonService)
+    Write-Log ("Service tuning complete: auto-start {0} -> {1}, manual {2}, disabled {3} ({4} per-user templates kept at stock Start; skipped {5} drivers / {6} non-service keys)" -f `
+        $autoBefore, $autoAfter, $stats.Manual, $stats.Disabled, $stats.UserTemplates, $stats.Driver, $stats.NonService)
     if ($autoAfter -gt 40) {
         Write-Log "More than 40 auto-start services survived - check the keep lists" "WARN"
     }
